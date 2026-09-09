@@ -1,0 +1,52 @@
+name: Build Windows EXE
+
+# Ruleaza automat la push pe main/master si la orice Pull Request,
+# plus poti da click manual pe "Run workflow" in tab-ul Actions.
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout cod
+        uses: actions/checkout@v4
+
+      - name: Instaleaza Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instaleaza dependinte
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Construieste executabilul (.exe)
+        run: |
+          pyinstaller --noconfirm --onefile --windowed `
+            --name "DozareTitan" `
+            main.py
+
+      # Rezultatul apare in dist/DozareTitan.exe
+      - name: Incarca .exe ca artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DozareTitan-windows-exe
+          path: dist/DozareTitan.exe
+
+      # Optional: daca vrei ca .exe-ul sa apara automat intr-un GitHub Release
+      # atunci cand pui un tag de forma v1.0.0, decomenteaza blocul de mai jos.
+      # - name: Creeaza Release cu .exe atasat
+      #   if: startsWith(github.ref, 'refs/tags/v')
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: dist/DozareTitan.exe
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
