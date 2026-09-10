@@ -3,8 +3,23 @@ plus migratii pentru date salvate cu o structura mai veche."""
 
 import json
 import os
+import sys
 
 from .config import DATA_DIR, DATA_FILE, ALIAJ_IMPLICIT
+
+
+def _ascunde_folder_windows(cale):
+    """Seteaza atributul Windows 'Hidden' pe folder. Pe Linux/Mac numele cu
+    punct in fata (.dozare_titan) e suficient ca sa fie ascuns; pe Windows
+    conventia nu exista, deci trebuie setat explicit atributul din sistem."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        FILE_ATTRIBUTE_HIDDEN = 0x02
+        ctypes.windll.kernel32.SetFileAttributesW(cale, FILE_ATTRIBUTE_HIDDEN)
+    except Exception:
+        pass  # nu blocam salvarea datelor daca ascunderea vizuala esueaza
 
 
 def _numar_bare_anterioare(order, recipe_id):
@@ -59,6 +74,9 @@ def incarca_date():
 
 
 def salveaza_date(state):
+    folder_nou = not os.path.isdir(DATA_DIR)
     os.makedirs(DATA_DIR, exist_ok=True)
+    if folder_nou:
+        _ascunde_folder_windows(DATA_DIR)
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)

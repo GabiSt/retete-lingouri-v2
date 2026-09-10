@@ -51,14 +51,32 @@ def construieste_date_retdozare_comanda(order, lots):
     RAMAS dupa consumul din reteta anterioara — nu se reseteaza la stocul
     de intrare de doua ori pentru acelasi lot.
 
+    Bare deja PRODUSE (bar["consumApplied"] cu calcSnapshot/consumSnapshot)
+    urmaresc STRICT istoricul real inregistrat la momentul aplicarii —
+    cantitatile (calcSnapshot) si loturile efectiv consumate
+    (consumSnapshot, care poate contine mai multe loturi pentru acelasi
+    material daca stocul s-a schimbat in timpul acelei bare: intai ce mai
+    ramanea din lotul vechi, apoi restul din lotul nou). NU se mai
+    recalculeaza aceste bare cu selectia curenta de lot a retetei — altfel,
+    daca lotul a fost schimbat intre timp (cel vechi ramas la 0 stoc),
+    simularea ar scadea din GRESEALA toata cantitatea din lotul nou, ca si
+    cum bara ar fi fost produsa integral din el, ignorand ce s-a consumat
+    real din lotul vechi.
+
+    Doar barele INCA NEPRODUSE (fara consumApplied) raman un PLAN: acestea
+    se calculeaza cu parametrii ACTUALI ai retetei (target/loturi/portie/
+    nr.presari), pentru ca reflecta ce se va intampla daca sunt produse
+    acum, cu loturile curent selectate.
+
     Returneaza o lista de dict-uri, unul per reteta, in ordinea lor.
     """
     tip_aliaj = order.get("tipAliaj", ALIAJ_IMPLICIT)
     stoc_per_lot = {l["id"]: to_float(l.get("stocIntrare")) for l in lots}
+    lots_by_id = {l["id"]: l for l in lots}
 
-    def _stoc_pt_materiale(lot_sel, materiale_active):
+    def _stoc_pt_materiale(lot_map, materiale_active):
         return {
-            mat["id"]: stoc_per_lot.get(lot_sel[mat["id"]]["id"], 0.0) if lot_sel.get(mat["id"]) else 0.0
+            mat["id"]: stoc_per_lot.get(lot_map[mat["id"]]["id"], 0.0) if lot_map.get(mat["id"]) else 0.0
             for mat in materiale_active
         }
 
@@ -70,25 +88,62 @@ def construieste_date_retdozare_comanda(order, lots):
         ]
         lot_sel = {k: next((l for l in lots if l["id"] == r["lotSel"].get(k)), None) for k in ORDINE_MAT}
 
-        stoc_initial = _stoc_pt_materiale(lot_sel, materiale_active)
+        # Lotul "in uz" pentru afisare (Loturi si compozitie initiala +
+        # Bilant presare al barelor deja produse): porneste de la selectia
+        # curenta, dar e corectat mai jos pe baza istoricului REAL al
+        # primei bare produse, daca acela arata alt lot decat cel selectat
+        # acum (de ex. lotul initial a fost intre timp epuizat/inlocuit).
+        lot_initial = dict(lot_sel)
+        for bar in r.get("bare", []):
+            if not (bar.get("consumApplied") and bar.get("consumSnapshot")):
+                continue
+            for k in ORDINE_MAT:
+                intrari = bar["consumSnapshot"].get(k) or []
+                if intrari:
+                    lot_prim = lots_by_id.get(intrari[0].get("lotId"))
+                    if lot_prim:
+                        lot_initial[k] = lot_prim
+            break  # doar prima bara deja produsa conteaza pentru starea initiala
+
+        stoc_initial = _stoc_pt_materiale(lot_initial, materiale_active)
+
+        # Lotul "curent" pe masura ce parcurgem istoricul barelor produse —
+        # se actualizeaza de fiecare data cand o bara arata ca s-a trecut,
+        # intre timp, pe alt lot pentru un material.
+        lot_in_uz = dict(lot_initial)
 
         bilant_randuri = []  # [(eticheta, {material_id: stoc_kg}), ...]
         offset_bare = _numar_bare_anterioare(order, r["id"])
         for i, bar in enumerate(r.get("bare", [])):
-            # RetDozare e o fisa de PLANIFICARE (ca tab-ul original din Excel):
-            # foloseste mereu dozarea calculata cu parametrii ACTUALI ai
-            # retetei (target/loturi/portie/nr.presari), nu un calcSnapshot
-            # inghetat de cand o bara a fost aplicata pe stoc cu alti
-            # parametri — altfel barele din aceeasi reteta ar iesi cu
-            # cantitati diferite intre ele, desi ar trebui sa fie identice.
-            calc = calculeaza_bara(tip_aliaj, r["target"], lot_sel, r.get("portie"), r.get("numarPresari") or 1)
-            bilant_randuri.append((f"B{offset_bare + i + 1}", _stoc_pt_materiale(lot_sel, materiale_active)))
-            if not calc.get("eroare"):
+            produsa = bool(bar.get("consumApplied") and bar.get("consumSnapshot") and bar.get("calcSnapshot"))
+            if produsa:
+                # Bara deja produsa: urmarim EXACT ce s-a consumat, din
+                # consumSnapshot (posibil impartit intre lotul vechi si cel
+                # nou) — nu recalculam cu lotul selectat ACUM in reteta.
+                snapshot = bar["consumSnapshot"]
+                bilant_randuri.append((f"B{offset_bare + i + 1}", _stoc_pt_materiale(lot_in_uz, materiale_active)))
                 for mat in materiale_active:
-                    lot = lot_sel.get(mat["id"])
-                    if lot:
-                        stoc_per_lot[lot["id"]] -= calc["rezultatTotal"].get(mat["id"], 0.0)
-                bilant_randuri.append(("", _stoc_pt_materiale(lot_sel, materiale_active)))
+                    intrari = snapshot.get(mat["id"]) or []
+                    for intrare in intrari:
+                        lot_id = intrare.get("lotId")
+                        stoc_per_lot[lot_id] = stoc_per_lot.get(lot_id, 0.0) - to_float(intrare.get("kg"))
+                    if intrari:
+                        lot_final = lots_by_id.get(intrari[-1].get("lotId"))
+                        if lot_final:
+                            lot_in_uz[mat["id"]] = lot_final
+                bilant_randuri.append(("", _stoc_pt_materiale(lot_in_uz, materiale_active)))
+            else:
+                # Bara inca neprodusa: ramane un PLAN, calculat cu
+                # parametrii ACTUALI ai retetei (target/loturi/portie/
+                # nr.presari) — la fel ca pana acum.
+                calc = calculeaza_bara(tip_aliaj, r["target"], lot_sel, r.get("portie"), r.get("numarPresari") or 1)
+                bilant_randuri.append((f"B{offset_bare + i + 1}", _stoc_pt_materiale(lot_sel, materiale_active)))
+                if not calc.get("eroare"):
+                    for mat in materiale_active:
+                        lot = lot_sel.get(mat["id"])
+                        if lot:
+                            stoc_per_lot[lot["id"]] -= calc["rezultatTotal"].get(mat["id"], 0.0)
+                    bilant_randuri.append(("", _stoc_pt_materiale(lot_sel, materiale_active)))
 
         portie = to_float(r.get("portie"))
         nr_presari = to_float(r.get("numarPresari"), 1) or 1
@@ -107,6 +162,7 @@ def construieste_date_retdozare_comanda(order, lots):
             "reteta": r,
             "materiale_active": materiale_active,
             "lot_sel": lot_sel,
+            "lot_initial": lot_initial,
             "stoc_initial": stoc_initial,
             "bilant_randuri": bilant_randuri,
             "randuri_portie": randuri_portie,
@@ -185,7 +241,7 @@ def _scrie_bloc_retdozare_xlsx(ws, start_row, order, r, date_ret, spec, bold, it
         ws.cell(row=rand, column=c, value=titlu).font = italic_bold
     rand += 1
     for mat in date_ret["materiale_active"]:
-        lot = date_ret["lot_sel"].get(mat["id"])
+        lot = date_ret["lot_initial"].get(mat["id"])
         ws.cell(row=rand, column=1, value=mat["nume"])
         ws.cell(row=rand, column=2, value=lot.get("nrLot", "") if lot else "")
         ws.cell(row=rand, column=3, value=round(date_ret["stoc_initial"].get(mat["id"], 0.0), 3))
@@ -307,7 +363,7 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire):
         elemente.append(Paragraph("Loturi si compozitie initiala", stil_sectiune))
         date_lot = [["Material", "LOT", "Stoc disponibil [Kg]", "% Ti", "% Al", "% V", "% O", "% Fe"]]
         for mat in materiale:
-            lot = date_ret["lot_sel"].get(mat["id"])
+            lot = date_ret["lot_initial"].get(mat["id"])
             ti_val = _lot_ti(lot) if lot else 0
             date_lot.append([
                 mat["nume"],
