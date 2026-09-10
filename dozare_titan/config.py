@@ -5,6 +5,21 @@ material nou (ex. o sursa de Si/Zr/Mo pentru Ti-VT9).
 """
 
 import os
+import sys
+
+
+def _director_aplicatie():
+    """Folderul in care se afla exe-ul (cand ruleaza ca aplicatie compilata
+    cu PyInstaller) sau scriptul principal (cand ruleaza cu "python
+    main.py"). Datele se salveaza langa aplicatie, nu in profilul
+    utilizatorului, ca sa fie portabile (poti muta folderul cu exe-ul in
+    alta parte si isi ia datele cu el)."""
+    if getattr(sys, "frozen", False):
+        # PyInstaller: sys.executable e chiar exe-ul (dozare_titan.exe).
+        return os.path.dirname(sys.executable)
+    # Rulare normala ca script Python: folderul care contine main.py
+    # (radacina proiectului), indiferent de unde e lansata comanda.
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ---------------------------------------------------------------------------
 # Materiale de stoc
@@ -15,7 +30,8 @@ import os
 #   1. adaugate ca intrari noi in MATERIALE (cu un "id" nou, unic);
 #   2. adaugate campurile de doza corespunzatoare in dialoguri.py
 #      (DialogLotNou -> etichete_doza);
-#   3. folosite in formula ta din calcule/vt9.py.
+#   3. folosite intr-un pas ("id") din specificatia aliajului, in
+#      calcule/specificatii.py (vezi SPEC_VT9 acolo pentru un exemplu).
 MATERIALE = [
     {"id": "burete", "nume": "Burete de titan"},
     {"id": "aliajAlV", "nume": "Aliaj Al-V"},
@@ -30,7 +46,14 @@ ORDINE_MAT = [m["id"] for m in MATERIALE]
 
 ADMIN_PASS = "titan2026"
 
-DATA_DIR = os.path.join(os.path.expanduser("~"), ".dozare_titan")
+# Folder ASCUNS (nume cu punct in fata, ca pe Linux/Mac), asezat langa
+# exe-ul aplicatiei (sau langa main.py, daca ruleaza ca script) — NU in
+# profilul utilizatorului. Pe Windows, un folder cu punct in fata nu se
+# ascunde automat din Explorer (asta e o conventie specifica Linux/Mac),
+# dar numele ramane la fel; daca vrei sa fie ascuns si vizual pe Windows,
+# seteaza-i atributul "Hidden" din proprietatile folderului dupa prima
+# rulare (Explorer -> click dreapta pe folder -> Proprietati -> Ascuns).
+DATA_DIR = os.path.join(_director_aplicatie(), ".dozare_titan")
 DATA_FILE = os.path.join(DATA_DIR, "date.json")
 
 # Etichetele materialelor asa cum apar pe formularul tiparit "Fisa limita -cda"
@@ -48,10 +71,17 @@ FISA_LIMITA_ETICHETE = {
 
 # ---------------------------------------------------------------------------
 # Tipuri de aliaj — calculul de dozare/RetDozare e valabil per tip de aliaj.
-# Comenzile de pana acum au fost toate pentru Ti6Al4V; cand apar alte tipuri,
-# se adauga o noua intrare aici (cu limitele ei chimice) si un generator
-# de formula dedicat in calcule/ (vezi calcule/vt9.py pentru punctul de
-# start al Ti-VT9).
+# Cand apare un tip nou, se adauga o noua intrare aici (cu limitele ei
+# chimice) SI o specificatie de dozare corespunzatoare:
+#   1. adauga o specificatie noua in calcule/specificatii.py (dupa modelul
+#      celor existente: SPEC_TI6AL4V, SPEC_VT9 etc.) — descrie ce materiale
+#      intra in reteta si ce element chimic acopera fiecare;
+#   2. inregistreaz-o in calcule/__init__.py -> DOZATOARE, sub cheia
+#      EXACT IDENTICA cu cea folosita mai jos (ex. "Ti6Al4V-AMS" nu
+#      "Ti6Al4V") — combobox-ul din UI populeaza order["tipAliaj"] direct
+#      din ALIAJE_DISPONIBILE (cheile de mai jos), deci orice diferenta de
+#      scriere intre cele doua locuri face ca acel aliaj sa nu poata fi
+#      niciodata calculat.
 # ---------------------------------------------------------------------------
 ALIAJ_IMPLICIT = "Ti5"
 ALIAJE_SPEC = {
