@@ -20,8 +20,13 @@ try:
 except ImportError:
     REPORTLAB_DISPONIBIL = False
 
-from ..config import MATERIALE, FISA_LIMITA_ETICHETE
-from ..utils import to_float, fmt
+from ..config import (
+    MATERIALE, FISA_LIMITA_ETICHETE, ORDINE_AFISARE_MATERIALE, ALIAJE_SPEC,
+    BENEFICIAR_IMPLICIT, SEF_SECTIE_LINGOURI, INTOCMIT_NUME, COD_FORMULAR_FISA_LIMITA,
+)
+from ..utils import to_float, fmt, numar_comanda
+
+_MATERIALE_PRIN_ID = {m["id"]: m for m in MATERIALE}
 
 
 def gaseste_istoric_lot(lot_id, orders):
@@ -111,10 +116,38 @@ def calculeaza_consum_comanda(order, lots):
     return rezultat
 
 
+def _randuri_fisa_limita(consum):
+    """Construieste randurile tabelului "Fisa limita": (eticheta, LOT, kg)
+    pentru fiecare lot folosit efectiv, cate un rand PER LOT (nu un singur
+    rand cu loturile insirate prin virgula) — exact ca pe formularul
+    tiparit, unde "Burete Ti L Yang" apare de doua ori daca s-au folosit
+    doua loturi diferite. Intre materiale diferite se insereaza un rand gol
+    (None), tot ca pe formular. Materialele neconsumate deloc (fara niciun
+    lot aplicat pe stoc) nu apar pe formular."""
+    randuri = []
+    for mat_id in ORDINE_AFISARE_MATERIALE:
+        mat = _MATERIALE_PRIN_ID.get(mat_id)
+        if not mat:
+            continue
+        date_mat = consum.get(mat_id, {"loturi": [], "total": 0.0})
+        loturi = date_mat["loturi"]
+        if not loturi:
+            continue
+        eticheta = FISA_LIMITA_ETICHETE.get(mat_id, mat["nume"])
+        for nr_lot, kg in loturi:
+            randuri.append((eticheta, nr_lot, kg))
+        randuri.append(None)
+    if randuri and randuri[-1] is None:
+        randuri.pop()
+    return randuri
+
+
 def genereaza_fisa_limita_xlsx(order, consum, cale_iesire):
     """Genereaza fisierul .xlsx \"Fisa limita -cda\", cu structura identica
-    formularului tiparit: cate un rand per material, cu LOT-ul (loturile)
-    efectiv consumate si cantitatea reala scazuta din stoc."""
+    formularului tiparit: antet cu Comanda/Beneficiar/Grad aliaj/numar de
+    bucati lingou, titlu centrat, apoi cate un rand per LOT efectiv
+    consumat (nu per material — un material cu doua loturi apare pe doua
+    randuri), cu semnaturile standard la final."""
     if not OPENPYXL_DISPONIBIL:
         raise RuntimeError(
             "Biblioteca 'openpyxl' nu este instalata. Ruleaza: pip install openpyxl"
@@ -126,51 +159,85 @@ def genereaza_fisa_limita_xlsx(order, consum, cale_iesire):
 
     subtire = Side(style="thin", color="000000")
     chenar = Border(left=subtire, right=subtire, top=subtire, bottom=subtire)
+    bold = Font(bold=True)
+    italic = Font(italic=True)
+    italic_bold = Font(bold=True, italic=True)
+    centru = Alignment(horizontal="center")
 
-    ws.merge_cells("A1:E1")
-    ws["A1"] = "FISA  LIMITA  -cda"
-    ws["A1"].font = Font(bold=True, size=13)
-    ws["A1"].alignment = Alignment(horizontal="center")
+    spec = ALIAJE_SPEC.get(order.get("tipAliaj"), {})
+    numar = numar_comanda(order)
 
-    if order.get("nume"):
-        ws.merge_cells("A2:E2")
-        ws["A2"] = order["nume"]
-        ws["A2"].alignment = Alignment(horizontal="center")
+    # --- Antet: data (dreapta-sus), apoi Comanda / Beneficiar / Grad / -
+    # numar buc. lingou (stanga, sub logo) -------------------------------
+    ws.cell(row=1, column=5, value=order.get("data", "")).alignment = Alignment(horizontal="right")
+    ws.cell(row=1, column=1, value="ZIROM TITANIUM").font = Font(bold=True, size=13, color="1F3864")
 
-    rand_antet = 4
-    for col in range(1, 6):
+    rand = 3
+    ws.cell(row=rand, column=1, value=f"Comanda {numar}").font = bold
+    rand += 1
+    ws.cell(row=rand, column=1, value=f"Beneficiar-{order.get('beneficiar', BENEFICIAR_IMPLICIT)}").font = bold
+    rand += 1
+    ws.cell(row=rand, column=1, value=spec.get("grad", spec.get("nume", ""))).font = bold
+    rand += 1
+    nr_buc = order.get("nrBucLingouri", "")
+    if nr_buc:
+        ws.cell(row=rand, column=1, value=f"{nr_buc} buc lingou")
+    rand += 2
+
+    ws.merge_cells(start_row=rand, start_column=1, end_row=rand, end_column=5)
+    c = ws.cell(row=rand, column=1, value=f"FISA  LIMITA cda {numar}")
+    c.font = Font(bold=True, size=13)
+    c.alignment = centru
+    rand += 2
+
+    rand_antet = rand
+    for col in range(1, 4):
         ws.cell(row=rand_antet, column=col).border = chenar
-    ws.cell(row=rand_antet, column=2, value="LOT").font = Font(italic=True, bold=True)
-    ws.cell(row=rand_antet, column=2).alignment = Alignment(horizontal="center")
-    ws.cell(row=rand_antet, column=3, value="Cantitate,Kg").font = Font(italic=True, bold=True)
-    ws.cell(row=rand_antet, column=3).alignment = Alignment(horizontal="center")
-
+    c = ws.cell(row=rand_antet, column=2, value="LOT")
+    c.font = italic_bold
+    c.alignment = centru
+    c = ws.cell(row=rand_antet, column=3, value="CANTITATE")
+    c.font = italic_bold
+    c.alignment = centru
     rand = rand_antet + 1
-    for mat in MATERIALE:
-        eticheta = FISA_LIMITA_ETICHETE.get(mat["id"], mat["nume"])
-        date_mat = consum.get(mat["id"], {"loturi": [], "total": 0.0})
-        loturi_text = ", ".join(nr for nr, _ in date_mat["loturi"])
-        total = date_mat["total"]
+    for col in range(1, 4):
+        ws.cell(row=rand, column=col).border = chenar
+    c = ws.cell(row=rand, column=3, value="[Kg]")
+    c.font = italic
+    c.alignment = centru
+    rand += 2
 
-        ws.cell(row=rand, column=1, value=eticheta)
-        ws.cell(row=rand, column=2, value=loturi_text)
-        ws.cell(row=rand, column=3, value=round(total, 3) if total else None)
-        ws.cell(row=rand, column=3).alignment = Alignment(horizontal="right")
-        for col in range(1, 6):
+    for intrare in _randuri_fisa_limita(consum):
+        if intrare is None:
+            rand += 1
+            continue
+        eticheta, nr_lot, kg = intrare
+        ws.cell(row=rand, column=1, value=eticheta).font = italic
+        ws.cell(row=rand, column=2, value=nr_lot).alignment = centru
+        c = ws.cell(row=rand, column=3, value=round(kg, 3) if kg else None)
+        c.alignment = Alignment(horizontal="right")
+        for col in range(1, 4):
             ws.cell(row=rand, column=col).border = chenar
         rand += 1
 
-    rand += 4
+    rand += 3
     ws.cell(row=rand, column=1, value="Nume/Semnatura")
 
-    rand += 6
-    ws.cell(row=rand, column=1, value="Sef Sectie Lingouri")
-    ws.cell(row=rand, column=5, value="Intocmit,")
+    rand += 3
+    ws.cell(row=rand, column=1, value="Sef Sectie Lingouri,")
+    ws.cell(row=rand, column=4, value="Intocmit,")
+    rand += 1
+    ws.cell(row=rand, column=1, value=SEF_SECTIE_LINGOURI)
+    ws.cell(row=rand, column=4, value=INTOCMIT_NUME)
+
+    rand += 3
+    ws.cell(row=rand, column=1, value="Page 1")
+    ws.cell(row=rand, column=4, value=f"Formular Cod {COD_FORMULAR_FISA_LIMITA}")
 
     ws.column_dimensions["A"].width = 22
-    ws.column_dimensions["B"].width = 24
-    ws.column_dimensions["C"].width = 16
-    ws.column_dimensions["D"].width = 14
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 16
     ws.column_dimensions["E"].width = 14
 
     wb.save(cale_iesire)
@@ -190,46 +257,77 @@ def genereaza_fisa_limita_pdf(order, consum, cale_iesire):
         topMargin=1.5 * cm, bottomMargin=1.5 * cm,
     )
     stiluri = getSampleStyleSheet()
+    stil_logo = ParagraphStyle("LogoFisaLimita", parent=stiluri["Heading2"], textColor=colors.HexColor("#1F3864"))
+    stil_data = ParagraphStyle("DataFisaLimita", parent=stiluri["Normal"], alignment=2)
+    stil_antet = ParagraphStyle("AntetFisaLimita", parent=stiluri["Normal"], fontName="Helvetica-Bold", spaceAfter=2)
     stil_titlu = ParagraphStyle("TitluFisaLimita", parent=stiluri["Heading2"], alignment=TA_CENTER)
 
-    elemente = [Paragraph("FISA LIMITA -cda", stil_titlu)]
-    if order.get("nume"):
-        elemente.append(Paragraph(order["nume"], ParagraphStyle(
-            "SubtitluFisaLimita", parent=stiluri["Normal"], alignment=TA_CENTER
-        )))
+    spec = ALIAJE_SPEC.get(order.get("tipAliaj"), {})
+    numar = numar_comanda(order)
+
+    antet = Table([[
+        Paragraph("ZIROM TITANIUM", stil_logo),
+        Paragraph(order.get("data", ""), stil_data),
+    ]], colWidths=[12 * cm, 5 * cm])
+    antet.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    elemente = [antet, Spacer(1, 0.5 * cm)]
+
+    elemente.append(Paragraph(f"Comanda {numar}", stil_antet))
+    elemente.append(Paragraph(f"Beneficiar-{order.get('beneficiar', BENEFICIAR_IMPLICIT)}", stil_antet))
+    elemente.append(Paragraph(spec.get("grad", spec.get("nume", "")), stil_antet))
+    nr_buc = order.get("nrBucLingouri", "")
+    if nr_buc:
+        elemente.append(Paragraph(f"{nr_buc} buc lingou", stiluri["Normal"]))
     elemente.append(Spacer(1, 0.6 * cm))
 
-    date_tabel = [["", "LOT", "Cantitate,Kg", "", ""]]
-    for mat in MATERIALE:
-        eticheta = FISA_LIMITA_ETICHETE.get(mat["id"], mat["nume"])
-        date_mat = consum.get(mat["id"], {"loturi": [], "total": 0.0})
-        loturi_text = ", ".join(nr for nr, _ in date_mat["loturi"])
-        total = date_mat["total"]
-        date_tabel.append([eticheta, loturi_text, fmt(total, 3) if total else "", "", ""])
+    elemente.append(Paragraph(f"FISA  LIMITA cda {numar}", stil_titlu))
+    elemente.append(Spacer(1, 0.6 * cm))
 
-    tabel = Table(date_tabel, colWidths=[4.2 * cm, 4.4 * cm, 3.2 * cm, 2.5 * cm, 2.5 * cm])
-    tabel.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.75, colors.black),
-        ("FONTNAME", (1, 0), (2, 0), "Helvetica-BoldOblique"),
+    date_tabel = [["", "LOT", "CANTITATE\n[Kg]"]]
+    randuri_gol = set()
+    for intrare in _randuri_fisa_limita(consum):
+        if intrare is None:
+            date_tabel.append(["", "", ""])
+            randuri_gol.add(len(date_tabel) - 1)
+            continue
+        eticheta, nr_lot, kg = intrare
+        date_tabel.append([eticheta, nr_lot, fmt(kg, 3) if kg else ""])
+
+    tabel = Table(date_tabel, colWidths=[6 * cm, 5 * cm, 4 * cm])
+    stil_tabel = [
+        ("FONTNAME", (1, 0), (2, 0), "Helvetica-Oblique"),
         ("ALIGN", (1, 0), (2, 0), "CENTER"),
         ("ALIGN", (2, 1), (2, -1), "RIGHT"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("FONTNAME", (0, 1), (0, -1), "Helvetica-Oblique"),
+    ]
+    for rand_idx in range(len(date_tabel)):
+        if rand_idx in randuri_gol:
+            continue
+        stil_tabel.append(("GRID", (0, rand_idx), (-1, rand_idx), 0.75, colors.black))
+    tabel.setStyle(TableStyle(stil_tabel))
     elemente.append(tabel)
 
     elemente.append(Spacer(1, 2.2 * cm))
     elemente.append(Paragraph("Nume/Semnatura", stiluri["Normal"]))
-    elemente.append(Spacer(1, 2.2 * cm))
+    elemente.append(Spacer(1, 1.4 * cm))
 
-    tabel_semnaturi = Table([["Sef Sectie Lingouri", "", "Intocmit,"]],
-                             colWidths=[6 * cm, 6 * cm, 5 * cm])
-    tabel_semnaturi.setStyle(TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("ALIGN", (2, 0), (2, 0), "RIGHT"),
-    ]))
+    tabel_semnaturi = Table([
+        ["Sef Sectie Lingouri,", "", "Intocmit,"],
+        [SEF_SECTIE_LINGOURI, "", INTOCMIT_NUME],
+    ], colWidths=[6 * cm, 6 * cm, 5 * cm])
+    tabel_semnaturi.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 10)]))
     elemente.append(tabel_semnaturi)
+
+    elemente.append(Spacer(1, 1.4 * cm))
+    tabel_footer = Table([["Page 1", f"Formular Cod {COD_FORMULAR_FISA_LIMITA}"]], colWidths=[8.5 * cm, 8.5 * cm])
+    tabel_footer.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+    ]))
+    elemente.append(tabel_footer)
 
     doc.build(elemente)

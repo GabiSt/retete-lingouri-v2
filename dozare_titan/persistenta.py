@@ -5,7 +5,7 @@ import json
 import os
 import sys
 
-from .config import DATA_DIR, DATA_FILE, ALIAJ_IMPLICIT
+from .config import DATA_DIR, DATA_FILE, ALIAJ_IMPLICIT, BENEFICIAR_IMPLICIT
 
 
 def _ascunde_folder_windows(cale):
@@ -54,6 +54,11 @@ def _migreaza_comanda(order):
     """Completeaza tipul de aliaj pentru comenzile salvate inainte de
     introducerea acestui camp — toate au fost facute pentru Ti6Al4V."""
     order.setdefault("tipAliaj", ALIAJ_IMPLICIT)
+    # Beneficiar si numarul de bucati lingou — folosite in antetul "Fisa
+    # limita" (ex. "Beneficiar-Zirom", "3 buc lingou"); comenzile salvate
+    # inainte de introducerea acestor campuri primesc valorile implicite.
+    order.setdefault("beneficiar", BENEFICIAR_IMPLICIT)
+    order.setdefault("nrBucLingouri", "")
     return order
 
 

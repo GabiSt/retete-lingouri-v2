@@ -57,17 +57,80 @@ DATA_DIR = os.path.join(_director_aplicatie(), ".dozare_titan")
 DATA_FILE = os.path.join(DATA_DIR, "date.json")
 
 # Etichetele materialelor asa cum apar pe formularul tiparit "Fisa limita -cda"
-# (identice cu formularul pe hartie, inclusiv denumirea repetata "Aluminiu").
+# (identice cu formularul pe hartie, inclusiv numele furnizorului asociat
+# fiecarui material — vezi sablonul "FISA LIMITA cda ...").
 FISA_LIMITA_ETICHETE = {
-    "burete": "Burete Ti",
+    "burete": "Burete Ti L Yang",
     "aliajAlV": "Prealiaj AlV-GfE",
     "alMetal": "Aluminiu",
-    "feMetal": "Aluminiu",
-    "tio2": "TiO2",
+    "feMetal": "Fier electrolitic",
+    "tio2": "TiO2-Kronos",
     "aliajAlMo": "Aliaj AlMo",
     "aliajSiTi": "Prealiaj SiTi",
     "zrMetal": "Zr 702",
 }
+
+# Ordinea de afisare a materialelor pe formularul "Fisa limita -cda" — usor
+# diferita de ORDINE_MAT (aici TiO2 apare inaintea Fierului electrolitic,
+# ca in sablonul tiparit).
+ORDINE_AFISARE_MATERIALE = [
+    "burete", "aliajAlV", "alMetal", "tio2", "feMetal", "aliajAlMo", "aliajSiTi", "zrMetal",
+]
+ORDINE_FISA_LIMITA = ORDINE_AFISARE_MATERIALE  # alias istoric
+
+# Prescurtarile folosite in antetul tabelului "Bilant presare [Kg]" din
+# RetDozare (coloane inguste, deci nume scurte — burete apare ca "Ti", nu
+# ca "Burete de titan").
+MATERIAL_ABREVIERE_BILANT = {
+    "burete": "Ti",
+    "aliajAlV": "AlV",
+    "alMetal": "Al",
+    "feMetal": "Fe",
+    "tio2": "TiO2",
+    "aliajAlMo": "AlMo",
+    "aliajSiTi": "SiTi",
+    "zrMetal": "Zr",
+}
+
+# Numele materialelor asa cum apar in tabelele "Loturi si compozitie
+# initiala" / "Initial" din RetDozare — din nou usor diferite de numele
+# din MATERIALE (mai descriptive, ca pe formularul tiparit).
+MATERIAL_NUME_RETDOZARE = {
+    "burete": "Burete Ti",
+    "aliajAlV": "Aliaj Al V",
+    "alMetal": "Al metal",
+    "feMetal": "Fe metal",
+    "tio2": "TiO2",
+    "aliajAlMo": "Aliaj Al-Mo",
+    "aliajSiTi": "Prealiaj Si-Ti",
+    "zrMetal": "Zr metal",
+}
+
+# Elementele chimice relevante pentru fiecare material, folosite ca sa
+# stim ce celule raman GOALE (nu "0.0000%") in tabelul "Initial" — un
+# material nu are sens sa arate, de ex., "% V" daca nu contine deloc V.
+MATERIAL_ELEMENTE_RELEVANTE = {
+    "burete": ["Ti", "O", "Fe"],
+    "aliajAlV": ["Al", "V", "O", "Fe"],
+    "alMetal": ["Al", "O", "Fe"],
+    "feMetal": ["Fe"],
+    "tio2": ["Ti", "O"],
+    "aliajAlMo": ["Al", "Mo", "O", "Fe"],
+    "aliajSiTi": ["Ti", "Si", "O", "Fe"],
+    "zrMetal": ["Zr", "O", "Fe"],
+}
+
+# Numele afisate implicit pe formulare, acolo unde formularul chiar
+# contine niste nume fixe (sef de sectie / intocmit) sau un beneficiar
+# implicit — pot fi editate ulterior in cod daca se schimba persoanele.
+SEF_SECTIE_LINGOURI = "Chiru Dan"
+INTOCMIT_NUME = "Racasanu Georgeta"
+BENEFICIAR_IMPLICIT = "Zirom"
+
+# Codurile formularelor tiparite (colt dreapta-jos), identice cu cele de pe
+# formularele pe hartie folosite pana acum.
+COD_FORMULAR_RETDOZARE = "PGQ 036.F8.00"
+COD_FORMULAR_FISA_LIMITA = "PGQ 036.F10.00"
 
 # ---------------------------------------------------------------------------
 # Tipuri de aliaj — calculul de dozare/RetDozare e valabil per tip de aliaj.
@@ -87,6 +150,8 @@ ALIAJ_IMPLICIT = "Ti5"
 ALIAJE_SPEC = {
     "Ti5": {
         "nume": "Ti5",
+        "titlu_formular": "AMS 4928 X",
+        "grad": "Ti gr5",
         "o_max": 0.002,
         "fe_max": 0.003,
         "n_max": 0.0005,
@@ -99,6 +164,8 @@ ALIAJE_SPEC = {
     },
     "Ti -VT9": {
         "nume": "Ti -VT9",
+        "titlu_formular": "VT9",
+        "grad": "Ti VT9",
         "o_max": 0.015,
         "si_min": 0.20,
         "si_max": 0.35,
@@ -112,6 +179,8 @@ ALIAJE_SPEC = {
     },
   "Ti6Al4V-AMS": {
         "nume": "Ti6Al4V-AMS",
+        "titlu_formular": "AMS 4928 X",
+        "grad": "Ti gr5",
         "o_max": 0.002,
         "al_min": 0.055,
         "al_max": 0.0675,

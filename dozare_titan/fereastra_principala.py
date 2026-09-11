@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from .config import (
     MATERIALE, ORDINE_MAT, ALIAJ_IMPLICIT, ALIAJE_SPEC, ALIAJE_DISPONIBILE,
+    BENEFICIAR_IMPLICIT,
 )
 from .stiluri import (
     CULOARE_BLEUMARIN, CULOARE_EROARE, CULOARE_SUCCES, CULOARE_AVERTISMENT,
@@ -445,6 +446,22 @@ class FereastraDozareTitan(QWidget):
         salveaza_date(self.state)
         self._rebuild_retete()
 
+    def _seteaza_beneficiar(self, order_id, text):
+        order = self._gaseste_comanda(order_id)
+        text = text.strip()
+        if order.get("beneficiar", BENEFICIAR_IMPLICIT) == text:
+            return
+        order["beneficiar"] = text
+        salveaza_date(self.state)
+
+    def _seteaza_nr_buc_lingouri(self, order_id, text):
+        order = self._gaseste_comanda(order_id)
+        text = text.strip()
+        if str(order.get("nrBucLingouri", "")) == text:
+            return
+        order["nrBucLingouri"] = text
+        salveaza_date(self.state)
+
     def _genereaza_retdozare(self, order_id):
         order = self._gaseste_comanda(order_id)
         tip_aliaj = order.get("tipAliaj", ALIAJ_IMPLICIT)
@@ -549,6 +566,26 @@ class FereastraDozareTitan(QWidget):
             lambda text, oid=order["id"]: self._seteaza_tip_aliaj(oid, text)
         )
         antet_layout.addWidget(combo_aliaj)
+
+        camp_beneficiar = QLineEdit(order.get("beneficiar", BENEFICIAR_IMPLICIT))
+        camp_beneficiar.setPlaceholderText("Beneficiar")
+        camp_beneficiar.setToolTip("Beneficiarul comenzii \u2014 apare in antetul \u201eFisa limita\u201d (ex. \u201eBeneficiar-Zirom\u201d)")
+        camp_beneficiar.setFixedWidth(110)
+        camp_beneficiar.setStyleSheet(STIL_CAMP)
+        camp_beneficiar.editingFinished.connect(
+            lambda oid=order["id"], c=camp_beneficiar: self._seteaza_beneficiar(oid, c.text())
+        )
+        antet_layout.addWidget(camp_beneficiar)
+
+        camp_buc_lingou = QLineEdit(str(order.get("nrBucLingouri", "")))
+        camp_buc_lingou.setPlaceholderText("buc. lingou")
+        camp_buc_lingou.setToolTip("Numarul de bucati lingou al comenzii \u2014 apare in antetul \u201eFisa limita\u201d (ex. \u201e3 buc lingou\u201d)")
+        camp_buc_lingou.setFixedWidth(80)
+        camp_buc_lingou.setStyleSheet(STIL_CAMP)
+        camp_buc_lingou.editingFinished.connect(
+            lambda oid=order["id"], c=camp_buc_lingou: self._seteaza_nr_buc_lingouri(oid, c.text())
+        )
+        antet_layout.addWidget(camp_buc_lingou)
 
         n = len(order["retete"])
         meta = QLabel(f"{n} reteta{'e' if n != 1 else ''} \u00b7 creata {order['data']}")
