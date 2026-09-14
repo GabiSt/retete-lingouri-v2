@@ -13,23 +13,42 @@ from PySide6.QtWidgets import (
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
-from .config import ADMIN_PASS, MATERIALE
+from .config import UTILIZATORI, MATERIALE
 from .stiluri import STIL_BUTON_PRINCIPAL, STIL_BUTON_SECUNDAR, STIL_CAMP, CULOARE_EROARE, CULOARE_GRI_TEXT, CULOARE_BORDURA, CULOARE_FUNDAL_SECTIUNE
 from .utils import fmt, to_float
 from .calcule import lot_ti, lot_rest
 
 
-class DialogLoginAdmin(QDialog):
+class DialogLogin(QDialog):
+    """Fereastra de login, obligatorie la pornirea aplicatiei (blocheaza
+    fereastra principala pana la o autentificare reusita).
+
+    Privilegiile de editare (adaugare/editare loturi, creare/stergere de
+    comenzi si retete, aplicare consum pe stoc) sunt acordate in functie
+    de contul cu care te loghezi — vezi config.UTILIZATORI ("editor":
+    True/False). Un cont fara drept de editare poate doar vizualiza.
+
+    La succes, self.rezultat contine dict-ul contului logat (utilizator,
+    parola, nume, editor) — "nume" e folosit apoi la rubrica "Intocmit"
+    pe documentele generate."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Autentificare admin")
+        self.setWindowTitle("Autentificare \u2014 Dozare lingouri titan")
         self.setFixedWidth(340)
-        layout = QVBoxLayout(self)
+        self.rezultat = None
 
-        info = QLabel("Doar administratorul poate adauga loturi noi si corecta stocurile.")
+        layout = QVBoxLayout(self)
+        info = QLabel("Introdu contul tau pentru a intra in aplicatie.")
         info.setWordWrap(True)
         info.setStyleSheet(f"color: {CULOARE_GRI_TEXT};")
         layout.addWidget(info)
+
+        layout.addWidget(QLabel("Utilizator"))
+        self.camp_utilizator = QLineEdit()
+        self.camp_utilizator.setStyleSheet(STIL_CAMP)
+        self.camp_utilizator.returnPressed.connect(self._verifica)
+        layout.addWidget(self.camp_utilizator)
 
         layout.addWidget(QLabel("Parola"))
         self.camp_parola = QLineEdit()
@@ -44,25 +63,37 @@ class DialogLoginAdmin(QDialog):
         layout.addWidget(self.eticheta_eroare)
 
         rand = QHBoxLayout()
-        btn_anuleaza = QPushButton("Anuleaza")
-        btn_anuleaza.setStyleSheet(STIL_BUTON_SECUNDAR)
-        btn_anuleaza.clicked.connect(self.reject)
+        btn_iesire = QPushButton("Iesire")
+        btn_iesire.setStyleSheet(STIL_BUTON_SECUNDAR)
+        btn_iesire.clicked.connect(self.reject)
         btn_intra = QPushButton("Intra")
         btn_intra.setStyleSheet(STIL_BUTON_PRINCIPAL)
         btn_intra.clicked.connect(self._verifica)
-        rand.addWidget(btn_anuleaza)
+        rand.addWidget(btn_iesire)
         rand.addWidget(btn_intra)
         layout.addLayout(rand)
 
-        self.camp_parola.setFocus()
+        self.camp_utilizator.setFocus()
 
     def _verifica(self):
-        if self.camp_parola.text() == ADMIN_PASS:
-            self.accept()
-        else:
-            self.eticheta_eroare.setText("Parola incorecta.")
+        utilizator = self.camp_utilizator.text().strip()
+        parola = self.camp_parola.text()
+        if not utilizator:
+            self.eticheta_eroare.setText("Introdu numele de utilizator.")
+            self.camp_utilizator.setFocus()
+            return
+        cont = next(
+            (u for u in UTILIZATORI
+             if u["utilizator"].lower() == utilizator.lower() and u["parola"] == parola),
+            None,
+        )
+        if cont is None:
+            self.eticheta_eroare.setText("Utilizator sau parola incorecta.")
             self.camp_parola.clear()
             self.camp_parola.setFocus()
+            return
+        self.rezultat = cont
+        self.accept()
 
 
 class DialogLotNou(QDialog):

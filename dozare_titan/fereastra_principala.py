@@ -26,7 +26,7 @@ from .stiluri import (
 from .utils import uid, fmt, to_float
 from .calcule import calculeaza_bara, lot_ti, lot_rest, target_ti, material_necesar
 from .persistenta import incarca_date, salveaza_date, _numar_bare_anterioare
-from .dialoguri import DialogLoginAdmin, DialogLotNou, DialogIstoricLot
+from .dialoguri import DialogLotNou, DialogIstoricLot
 from .export.fisa_limita import (
     gaseste_istoric_lot, calculeaza_consum_comanda,
     genereaza_fisa_limita_xlsx, genereaza_fisa_limita_pdf,
@@ -36,14 +36,16 @@ from .export.retdozare import genereaza_retdozare_xlsx, genereaza_retdozare_pdf
 
 
 class FereastraDozareTitan(QWidget):
-    def __init__(self):
+    def __init__(self, utilizator):
         super().__init__()
         self.setWindowTitle("Dozare lingouri titan")
         self.resize(1180, 780)
         self.setStyleSheet("background-color: white;")
 
         self.state = incarca_date()
-        self.is_admin = False
+        self.utilizator = utilizator
+        self.poate_edita = bool(utilizator.get("editor"))
+        self.se_delogheaza = False
         self.mat_expanded = {m["id"]: True for m in MATERIALE}
         self.order_expanded = {}
 
@@ -106,32 +108,24 @@ class FereastraDozareTitan(QWidget):
 
     def _refresh_zona_admin(self):
         _clear_layout(self.zona_admin)
-        if self.is_admin:
-            eticheta = QLabel("Admin activ")
-            eticheta.setStyleSheet(
-                f"color: {CULOARE_SUCCES}; font-weight: 600; font-size: 11px; "
-                f"padding: 4px 10px; border: 1px solid {CULOARE_SUCCES}; border-radius: 10px;"
-            )
-            self.zona_admin.addWidget(eticheta)
-            btn = QPushButton("Iesire admin")
-            btn.setStyleSheet(STIL_BUTON_SECUNDAR)
-            btn.clicked.connect(self._logout)
-            self.zona_admin.addWidget(btn)
-        else:
-            btn = QPushButton("Autentificare admin")
-            btn.setStyleSheet(STIL_BUTON_PRINCIPAL)
-            btn.clicked.connect(self._deschide_login)
-            self.zona_admin.addWidget(btn)
+        rol = "Editor" if self.poate_edita else "Doar vizualizare"
+        culoare_rol = CULOARE_SUCCES if self.poate_edita else CULOARE_GRI_TEXT
+        eticheta = QLabel(f"{self.utilizator.get('nume', '')} \u00b7 {rol}")
+        eticheta.setStyleSheet(
+            f"color: {culoare_rol}; font-weight: 600; font-size: 11px; "
+            f"padding: 4px 10px; border: 1px solid {culoare_rol}; border-radius: 10px;"
+        )
+        self.zona_admin.addWidget(eticheta)
+        btn = QPushButton("Delogare")
+        btn.setStyleSheet(STIL_BUTON_SECUNDAR)
+        btn.clicked.connect(self._delogare)
+        self.zona_admin.addWidget(btn)
 
-    def _deschide_login(self):
-        dialog = DialogLoginAdmin(self)
-        if dialog.exec() == QDialog.Accepted:
-            self.is_admin = True
-            self.refresh()
-
-    def _logout(self):
-        self.is_admin = False
-        self.refresh()
+    def _delogare(self):
+        if QMessageBox.question(self, "Confirmare", "Te deloghezi din aplicatie?") != QMessageBox.Yes:
+            return
+        self.se_delogheaza = True
+        self.close()
 
     # ------------------------------------------------------------------
     def refresh(self):
@@ -184,7 +178,7 @@ class FereastraDozareTitan(QWidget):
         stat.setStyleSheet(f"color: {CULOARE_GRI_TEXT}; font-size: 12px;")
         antet_layout.addWidget(stat)
 
-        if self.is_admin:
+        if self.poate_edita:
             btn_add = QPushButton("+ Lot nou")
             btn_add.setStyleSheet(STIL_BUTON_PRINCIPAL)
             btn_add.clicked.connect(lambda _, m=mat: self._adauga_lot(m))
@@ -213,7 +207,7 @@ class FereastraDozareTitan(QWidget):
 
         if not lots:
             mesaj = "Niciun lot introdus inca pentru acest material."
-            mesaj += " Foloseste \u201e+ Lot nou\u201d." if self.is_admin else " Autentifica-te ca admin pentru a adauga loturi."
+            mesaj += " Foloseste \u201e+ Lot nou\u201d." if self.poate_edita else " Contul tau nu are drept de editare — contacteaza un utilizator cu drept de editare pentru a adauga loturi."
             item = QTableWidgetItem(mesaj)
             item.setTextAlignment(Qt.AlignCenter)
             tabel.setSpan(0, 0, 1, len(coloane))
@@ -264,7 +258,7 @@ class FereastraDozareTitan(QWidget):
             btn_istoric.setToolTip("Vezi in ce comenzi/retete/bare a fost folosit acest lot")
             btn_istoric.clicked.connect(lambda _, lid=l["id"]: self._arata_istoric_lot(lid))
             cell_layout.addWidget(btn_istoric)
-            if self.is_admin:
+            if self.poate_edita:
                 btn_edit = QPushButton("Editeaza")
                 btn_edit.setStyleSheet(STIL_BUTON_SECUNDAR)
                 btn_edit.setCursor(Qt.PointingHandCursor)
@@ -344,10 +338,11 @@ class FereastraDozareTitan(QWidget):
         text.addWidget(subtitlu)
         antet.addLayout(text)
         antet.addStretch(1)
-        btn_comanda = QPushButton("+ Comanda noua")
-        btn_comanda.setStyleSheet(STIL_BUTON_PRINCIPAL)
-        btn_comanda.clicked.connect(self._adauga_comanda)
-        antet.addWidget(btn_comanda)
+        if self.poate_edita:
+            btn_comanda = QPushButton("+ Comanda noua")
+            btn_comanda.setStyleSheet(STIL_BUTON_PRINCIPAL)
+            btn_comanda.clicked.connect(self._adauga_comanda)
+            antet.addWidget(btn_comanda)
         self.retete_layout.addWidget(antet_widget)
 
         if not self.state["orders"]:
@@ -415,7 +410,7 @@ class FereastraDozareTitan(QWidget):
             cale += ".xlsx"
 
         try:
-            genereaza_fisa_limita_xlsx(order, consum, cale)
+            genereaza_fisa_limita_xlsx(order, consum, cale, intocmit_nume=self.utilizator.get("nume"))
         except Exception as e:
             QMessageBox.critical(self, "Eroare la generare", str(e))
             return
@@ -424,7 +419,7 @@ class FereastraDozareTitan(QWidget):
         pdf_ok, pdf_eroare = True, ""
         if REPORTLAB_DISPONIBIL:
             try:
-                genereaza_fisa_limita_pdf(order, consum, cale_pdf)
+                genereaza_fisa_limita_pdf(order, consum, cale_pdf, intocmit_nume=self.utilizator.get("nume"))
             except Exception as e:
                 pdf_ok, pdf_eroare = False, str(e)
         else:
@@ -496,7 +491,7 @@ class FereastraDozareTitan(QWidget):
             cale += ".xlsx"
 
         try:
-            genereaza_retdozare_xlsx(order, self.state["lots"], cale)
+            genereaza_retdozare_xlsx(order, self.state["lots"], cale, intocmit_nume=self.utilizator.get("nume"))
         except Exception as e:
             QMessageBox.critical(self, "Eroare la generare", str(e))
             return
@@ -505,7 +500,7 @@ class FereastraDozareTitan(QWidget):
         pdf_ok, pdf_eroare = True, ""
         if REPORTLAB_DISPONIBIL:
             try:
-                genereaza_retdozare_pdf(order, self.state["lots"], cale_pdf)
+                genereaza_retdozare_pdf(order, self.state["lots"], cale_pdf, intocmit_nume=self.utilizator.get("nume"))
             except Exception as e:
                 pdf_ok, pdf_eroare = False, str(e)
         else:
@@ -565,6 +560,7 @@ class FereastraDozareTitan(QWidget):
         combo_aliaj.currentTextChanged.connect(
             lambda text, oid=order["id"]: self._seteaza_tip_aliaj(oid, text)
         )
+        combo_aliaj.setEnabled(self.poate_edita)
         antet_layout.addWidget(combo_aliaj)
 
         camp_beneficiar = QLineEdit(order.get("beneficiar", BENEFICIAR_IMPLICIT))
@@ -575,6 +571,7 @@ class FereastraDozareTitan(QWidget):
         camp_beneficiar.editingFinished.connect(
             lambda oid=order["id"], c=camp_beneficiar: self._seteaza_beneficiar(oid, c.text())
         )
+        camp_beneficiar.setReadOnly(not self.poate_edita)
         antet_layout.addWidget(camp_beneficiar)
 
         camp_buc_lingou = QLineEdit(str(order.get("nrBucLingouri", "")))
@@ -585,6 +582,7 @@ class FereastraDozareTitan(QWidget):
         camp_buc_lingou.editingFinished.connect(
             lambda oid=order["id"], c=camp_buc_lingou: self._seteaza_nr_buc_lingouri(oid, c.text())
         )
+        camp_buc_lingou.setReadOnly(not self.poate_edita)
         antet_layout.addWidget(camp_buc_lingou)
 
         n = len(order["retete"])
@@ -609,10 +607,11 @@ class FereastraDozareTitan(QWidget):
             btn_retdozare.clicked.connect(lambda _, oid=order["id"]: self._genereaza_retdozare(oid))
             antet_layout.addWidget(btn_retdozare)
 
-        btn_sterge = QPushButton("\u2715")
-        btn_sterge.setStyleSheet(STIL_BUTON_PERICOL)
-        btn_sterge.clicked.connect(lambda _, oid=order["id"]: self._sterge_comanda(oid))
-        antet_layout.addWidget(btn_sterge)
+        if self.poate_edita:
+            btn_sterge = QPushButton("\u2715")
+            btn_sterge.setStyleSheet(STIL_BUTON_PERICOL)
+            btn_sterge.clicked.connect(lambda _, oid=order["id"]: self._sterge_comanda(oid))
+            antet_layout.addWidget(btn_sterge)
 
         layout.addWidget(antet)
 
@@ -623,10 +622,11 @@ class FereastraDozareTitan(QWidget):
             corp_layout.setSpacing(12)
             for r in order["retete"]:
                 corp_layout.addWidget(self._construieste_card_reteta(order, r))
-            btn_reteta = QPushButton("+ Reteta noua")
-            btn_reteta.setStyleSheet(STIL_BUTON_SECUNDAR)
-            btn_reteta.clicked.connect(lambda _, oid=order["id"]: self._adauga_reteta(oid))
-            corp_layout.addWidget(btn_reteta)
+            if self.poate_edita:
+                btn_reteta = QPushButton("+ Reteta noua")
+                btn_reteta.setStyleSheet(STIL_BUTON_SECUNDAR)
+                btn_reteta.clicked.connect(lambda _, oid=order["id"]: self._adauga_reteta(oid))
+                corp_layout.addWidget(btn_reteta)
             layout.addWidget(corp)
 
         return cadru
@@ -668,11 +668,13 @@ class FereastraDozareTitan(QWidget):
         camp_nume.editingFinished.connect(
             lambda oid=order["id"], rid=r["id"], c=camp_nume: self._redenumeste_reteta(oid, rid, c.text())
         )
+        camp_nume.setReadOnly(not self.poate_edita)
         rand_titlu.addWidget(camp_nume)
-        btn_sterge = QPushButton("\u2715")
-        btn_sterge.setStyleSheet(STIL_BUTON_PERICOL)
-        btn_sterge.clicked.connect(lambda _, oid=order["id"], rid=r["id"]: self._sterge_reteta(oid, rid))
-        rand_titlu.addWidget(btn_sterge)
+        if self.poate_edita:
+            btn_sterge = QPushButton("\u2715")
+            btn_sterge.setStyleSheet(STIL_BUTON_PERICOL)
+            btn_sterge.clicked.connect(lambda _, oid=order["id"], rid=r["id"]: self._sterge_reteta(oid, rid))
+            rand_titlu.addWidget(btn_sterge)
         layout.addLayout(rand_titlu)
 
         layout.addWidget(self._eticheta_eyebrow("Compozitie chimica tinta in bara (%)"))
@@ -688,6 +690,7 @@ class FereastraDozareTitan(QWidget):
                 lambda oid=order["id"], rid=r["id"], f=camp, c=camp_edit:
                     self._seteaza_tinta(oid, rid, f, c.text())
             )
+            camp_edit.setReadOnly(not self.poate_edita)
             bloc.addWidget(camp_edit)
             rand_tinta.addLayout(bloc)
 
@@ -712,7 +715,7 @@ class FereastraDozareTitan(QWidget):
             bloc.addWidget(eticheta_widget)
             combo = QComboBox()
             combo.setStyleSheet(STIL_CAMP)
-            combo.setEnabled(necesar)
+            combo.setEnabled(necesar and self.poate_edita)
             combo.addItem("\u2014 alege lot \u2014" if necesar else "\u2014 neutilizat \u2014", "")
             lots_mat = [l for l in self.state["lots"] if l["material"] == mat["id"]]
             sel_actual = r["lotSel"].get(mat["id"], "")
@@ -742,6 +745,7 @@ class FereastraDozareTitan(QWidget):
         camp_portie.editingFinished.connect(
             lambda oid=order["id"], rid=r["id"], c=camp_portie: self._seteaza_portie_reteta(oid, rid, c.text())
         )
+        camp_portie.setReadOnly(not self.poate_edita)
         bloc_portie.addWidget(camp_portie)
         rand_multiplicatori.addLayout(bloc_portie)
 
@@ -753,6 +757,7 @@ class FereastraDozareTitan(QWidget):
         camp_nr_bare.editingFinished.connect(
             lambda oid=order["id"], rid=r["id"], c=camp_nr_bare: self._seteaza_numar_bare(oid, rid, c.text())
         )
+        camp_nr_bare.setReadOnly(not self.poate_edita)
         bloc_nr_bare.addWidget(camp_nr_bare)
         rand_multiplicatori.addLayout(bloc_nr_bare)
 
@@ -764,6 +769,7 @@ class FereastraDozareTitan(QWidget):
         camp_nr_presari.editingFinished.connect(
             lambda oid=order["id"], rid=r["id"], c=camp_nr_presari: self._seteaza_numar_presari(oid, rid, c.text())
         )
+        camp_nr_presari.setReadOnly(not self.poate_edita)
         bloc_nr_presari.addWidget(camp_nr_presari)
         rand_multiplicatori.addLayout(bloc_nr_presari)
         rand_multiplicatori.addStretch(1)
@@ -773,10 +779,11 @@ class FereastraDozareTitan(QWidget):
         offset_bare = _numar_bare_anterioare(order, r["id"])
         for i, bar in enumerate(r["bare"]):
             layout.addWidget(self._construieste_rand_bara(order, r, bar, offset_bare + i))
-        btn_bara = QPushButton("+ Bara noua")
-        btn_bara.setStyleSheet(STIL_BUTON_SECUNDAR)
-        btn_bara.clicked.connect(lambda _, oid=order["id"], rid=r["id"]: self._adauga_bara(oid, rid))
-        layout.addWidget(btn_bara)
+        if self.poate_edita:
+            btn_bara = QPushButton("+ Bara noua")
+            btn_bara.setStyleSheet(STIL_BUTON_SECUNDAR)
+            btn_bara.clicked.connect(lambda _, oid=order["id"], rid=r["id"]: self._adauga_bara(oid, rid))
+            layout.addWidget(btn_bara)
 
         layout.addWidget(self._construieste_bilant_reteta(order, r))
 
@@ -969,19 +976,21 @@ class FereastraDozareTitan(QWidget):
             tag = QLabel("Consum aplicat")
             tag.setStyleSheet(TAG_STYLES["good"])
             rand_sus.addWidget(tag)
-            btn_revert = QPushButton("Anuleaza consumul")
-            btn_revert.setStyleSheet(STIL_BUTON_SECUNDAR)
-            btn_revert.clicked.connect(
-                lambda _, oid=order["id"], rid=r["id"], bid=bar["id"]: self._revert_consum(oid, rid, bid)
-            )
-            rand_sus.addWidget(btn_revert)
+            if self.poate_edita:
+                btn_revert = QPushButton("Anuleaza consumul")
+                btn_revert.setStyleSheet(STIL_BUTON_SECUNDAR)
+                btn_revert.clicked.connect(
+                    lambda _, oid=order["id"], rid=r["id"], bid=bar["id"]: self._revert_consum(oid, rid, bid)
+                )
+                rand_sus.addWidget(btn_revert)
 
-        btn_sterge = QPushButton("\u2715")
-        btn_sterge.setStyleSheet(STIL_BUTON_PERICOL)
-        btn_sterge.clicked.connect(
-            lambda _, oid=order["id"], rid=r["id"], bid=bar["id"]: self._sterge_bara(oid, rid, bid)
-        )
-        rand_sus.addWidget(btn_sterge)
+        if self.poate_edita:
+            btn_sterge = QPushButton("\u2715")
+            btn_sterge.setStyleSheet(STIL_BUTON_PERICOL)
+            btn_sterge.clicked.connect(
+                lambda _, oid=order["id"], rid=r["id"], bid=bar["id"]: self._sterge_bara(oid, rid, bid)
+            )
+            rand_sus.addWidget(btn_sterge)
         layout.addLayout(rand_sus)
 
         if not all_selected:
@@ -1125,7 +1134,7 @@ class FereastraDozareTitan(QWidget):
                 "⚠️ Una sau mai multe cantitati depasesc stocul disponibil sau sunt negative. "
                 "Poti aplica in continuare consumul — stocul va deveni negativ pentru materialele afectate.", "err"
             ))
-            if not bar.get("consumApplied"):
+            if not bar.get("consumApplied") and self.poate_edita:
                 btn_muta = QPushButton("\u2192 Muta bara pe reteta urmatoare")
                 btn_muta.setStyleSheet(STIL_BUTON_SECUNDAR)
                 btn_muta.clicked.connect(
@@ -1134,12 +1143,15 @@ class FereastraDozareTitan(QWidget):
                 layout.addWidget(btn_muta)
 
         if not bar.get("consumApplied"):
-            btn = QPushButton("✅ Aplica consumul pe stoc")
-            btn.setStyleSheet(STIL_BUTON_PRINCIPAL)
-            btn.clicked.connect(
-                lambda _, oid=order["id"], rid=r["id"], bid=bar["id"]: self._aplica_consum(oid, rid, bid)
-            )
-            layout.addWidget(btn)
+            if self.poate_edita:
+                btn = QPushButton("✅ Aplica consumul pe stoc")
+                btn.setStyleSheet(STIL_BUTON_PRINCIPAL)
+                btn.clicked.connect(
+                    lambda _, oid=order["id"], rid=r["id"], bid=bar["id"]: self._aplica_consum(oid, rid, bid)
+                )
+                layout.addWidget(btn)
+            else:
+                layout.addWidget(self._banner("Consumul nu a fost inca aplicat pe stoc. Contul tau nu are drept de editare.", "info"))
         else:
             layout.addWidget(self._banner("✅ Consumul a fost aplicat pe stoc.", "ok"))
 

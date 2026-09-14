@@ -17,7 +17,7 @@ except ImportError:
     OPENPYXL_DISPONIBIL = False
 
 try:
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.units import cm
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER
@@ -36,6 +36,7 @@ from ..utils import to_float, fmt, numar_comanda, pct
 from ..calcule import calculeaza_bara, target_ti, material_necesar
 from ..calcule.comun import ELEMENT_PER_MATERIAL, lot_ti
 from ..persistenta import _numar_bare_anterioare
+from .logo import adauga_logo_xlsx, logo_flowable_pdf
 
 _MATERIALE_PRIN_ID = {m["id"]: m for m in MATERIALE}
 
@@ -232,17 +233,21 @@ def construieste_date_retdozare_comanda(order, lots):
     return rezultate
 
 
-def genereaza_retdozare_xlsx(order, lots, cale_iesire):
+def genereaza_retdozare_xlsx(order, lots, cale_iesire, intocmit_nume=None):
     """Genereaza fisierul .xlsx \"RetDozare\", cu cate un bloc per reteta,
     reproducand sablonul tiparit folosit pana acum manual in Excel (vezi
     "Cda ...-Ti5-...pdf\": antet cu limitele chimice + \"Comanda\", tabelul
     compact de loturi, tabelul \"Initial\" (compozitie pe material),
     \"Bilant presare [Kg]\", \"Concentratii tinta in bara\" si \"Dozare
-    portie [Kg]\")."""
+    portie [Kg]\").
+
+    intocmit_nume: numele utilizatorului logat, afisat la rubrica
+    "Intocmit" — daca lipseste (None), se foloseste config.INTOCMIT_NUME."""
     if not OPENPYXL_DISPONIBIL:
         raise RuntimeError(
             "Biblioteca 'openpyxl' nu este instalata. Ruleaza: pip install openpyxl"
         )
+    intocmit_nume = intocmit_nume or INTOCMIT_NUME
 
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
@@ -271,15 +276,13 @@ def genereaza_retdozare_xlsx(order, lots, cale_iesire):
     for i, date_ret in enumerate(construieste_date_retdozare_comanda(order, lots)):
         r = date_ret["reteta"]
         rand_start = rand
-        rand = _scrie_bloc_retdozare_xlsx(ws, rand, order, r, date_ret, spec, stiluri)
+        rand = _scrie_bloc_retdozare_xlsx(ws, rand, order, r, date_ret, spec, stiluri, intocmit_nume)
         if i > 0:
             ws.row_breaks.append(Break(id=rand_start - 1))
         rand += 2
 
-    latimi = {"A": 22, "B": 13, "C": 9, "D": 9}
-    for col in "EFGHIJKL":
-        latimi[col] = 9
-    for col in "MNOPQRSTUVWXYZ":
+    latimi = {"A": 15, "B": 15, "C": 18, "D": 13, "E": 13, "F": 12, "G": 10, "H": 10}
+    for col in "IJKLMNOPQRSTUVWXYZ":
         latimi[col] = 9
     for col, latime in latimi.items():
         ws.column_dimensions[col].width = latime
@@ -296,20 +299,27 @@ def genereaza_retdozare_xlsx(order, lots, cale_iesire):
     wb.save(cale_iesire)
 
 
-def _scrie_bloc_retdozare_xlsx(ws, start_row, order, r, date_ret, spec, st):
+def _scrie_bloc_retdozare_xlsx(ws, start_row, order, r, date_ret, spec, st, intocmit_nume):
     """Scrie blocul unei singure retete incepand de la randul start_row si
     returneaza randul imediat urmator liber. Reproduce, coloana cu
-    coloana, sablonul tiparit "RetDozare"."""
+    coloana si rand cu rand, pozitionarile din sablonul original (foaia
+    "Retete" din Excel-urile de dozare folosite pana acum manual):
+    "Bilant presare [Kg]" sta ALATURI de tabelul "Loturi" (nu dedesubt),
+    incepand chiar de pe primul rand al acestuia — eticheta randului
+    (numele retetei / "B1", "B2"...) e in coloana H, iar valorile pe
+    material incep din coloana I."""
     materiale = date_ret["materiale_active"]
-    nr_col_bilant = 13  # coloana M — inceputul tabelului "Bilant presare"
+    label_col_bilant = 8   # coloana H — eticheta randului ("Reteta 1", "B1", "B2"...)
+    nr_col_bilant = 9      # coloana I — inceputul valorilor tabelului "Bilant presare"
 
     def mg(r1, c1, r2, c2):
         ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
 
     rand = start_row
 
-    # --- Antet pagina: logo (text) / numele comenzii / data -----------
-    ws.cell(row=rand, column=1, value="ZIROM TITANIUM").font = st["titlu_logo"]
+    # --- Antet pagina: logo / numele comenzii / data -------------------
+    if not adauga_logo_xlsx(ws, f"A{rand}", latime_px=110):
+        ws.cell(row=rand, column=1, value="ZIROM TITANIUM").font = st["titlu_logo"]
     mg(rand, 4, rand, 9)
     c = ws.cell(row=rand, column=4, value=order.get("nume", ""))
     c.font = st["titlu_comanda"]
@@ -369,42 +379,45 @@ def _scrie_bloc_retdozare_xlsx(ws, start_row, order, r, date_ret, spec, st):
     rand_dozare = rand
     rand += 2
 
-    # --- "Bilant presare [Kg]" (dreapta, in dreptul antetului) ---------
-    rand_bilant = rand_ams
+    # --- "Bilant presare [Kg]" (dreapta, incepand din acelasi rand ca
+    # primul rand al tabelului "Loturi" de mai jos) ---------------------
+    rand += 1
+    rand_loturi_start = rand
+    rand_bilant = rand_loturi_start
     if materiale:
-        mg(rand_bilant, nr_col_bilant, rand_bilant, nr_col_bilant + len(materiale))
+        mg(rand_bilant, nr_col_bilant, rand_bilant, nr_col_bilant + len(materiale) - 1)
     c = ws.cell(row=rand_bilant, column=nr_col_bilant, value="Bilant presare [Kg]")
     c.font = st["bold"]
     c.alignment = st["centru"]
     rand_bilant += 1
-    c = ws.cell(row=rand_bilant, column=nr_col_bilant, value=r.get("nume") or "Reteta")
+    c = ws.cell(row=rand_bilant, column=label_col_bilant, value=r.get("nume") or "Reteta")
     c.font = st["bold"]
-    for c_idx, mat in enumerate(materiale, start=nr_col_bilant + 1):
+    for c_idx, mat in enumerate(materiale, start=nr_col_bilant):
         cc = ws.cell(row=rand_bilant, column=c_idx, value=MATERIAL_ABREVIERE_BILANT.get(mat["id"], mat["nume"]))
         cc.font = st["italic_bold"]
     rand_bilant += 1
     if not date_ret["bilant_randuri"]:
-        ws.cell(row=rand_bilant, column=nr_col_bilant, value="(nicio bara adaugata)")
+        ws.cell(row=rand_bilant, column=label_col_bilant, value="(nicio bara adaugata)")
         rand_bilant += 1
     else:
         for eticheta, valori in date_ret["bilant_randuri"]:
-            ws.cell(row=rand_bilant, column=nr_col_bilant, value=eticheta)
-            for c_idx, mat in enumerate(materiale, start=nr_col_bilant + 1):
+            ws.cell(row=rand_bilant, column=label_col_bilant, value=eticheta)
+            for c_idx, mat in enumerate(materiale, start=nr_col_bilant):
                 ws.cell(row=rand_bilant, column=c_idx, value=round(valori.get(mat["id"], 0.0), 3))
             rand_bilant += 1
 
-    # --- Tabel compact "Loturi si compozitie initiala" -----------------
-    rand += 1
-    rand_loturi_start = rand
+    # --- Tabel compact "Loturi si compozitie initiala" (coloanele A, C,
+    # D, E — coloana B ramane libera, ca in sablonul original) ----------
+    rand = rand_loturi_start
     for mat in materiale:
         lot = date_ret["lot_initial"].get(mat["id"])
         elem = _element_principal(mat["id"])
         val_pct = date_ret["comps_initial"].get(mat["id"], {}).get(elem)
         ws.cell(row=rand, column=1, value=MATERIAL_NUME_RETDOZARE.get(mat["id"], mat["nume"]))
-        ws.cell(row=rand, column=2, value=lot.get("nrLot", "") if lot else "")
-        ws.cell(row=rand, column=3, value=round(date_ret["stoc_initial"].get(mat["id"], 0.0), 3))
-        ws.cell(row=rand, column=4, value=pct(val_pct / 100, 2) if val_pct else None)
-        for col_idx in range(1, 5):
+        ws.cell(row=rand, column=3, value=lot.get("nrLot", "") if lot else "")
+        ws.cell(row=rand, column=4, value=round(date_ret["stoc_initial"].get(mat["id"], 0.0), 3))
+        ws.cell(row=rand, column=5, value=pct(val_pct / 100, 2) if val_pct else None)
+        for col_idx in (1, 3, 4, 5):
             ws.cell(row=rand, column=col_idx).border = st["subtire"]
         rand += 1
     rand_loturi_end = rand
@@ -505,33 +518,37 @@ def _scrie_bloc_retdozare_xlsx(ws, start_row, order, r, date_ret, spec, st):
     ws.cell(row=rand, column=6, value="Intocmit,")
     rand += 1
     ws.cell(row=rand, column=1, value=SEF_SECTIE_LINGOURI)
-    ws.cell(row=rand, column=6, value=INTOCMIT_NUME)
+    ws.cell(row=rand, column=6, value=intocmit_nume)
     rand += 1
     ws.cell(row=rand, column=nr_col_bilant + max(len(materiale) - 2, 0), value=f"Formular Cod:{COD_FORMULAR_RETDOZARE}")
 
     return rand + 1
 
 
-def genereaza_retdozare_pdf(order, lots, cale_iesire):
+def genereaza_retdozare_pdf(order, lots, cale_iesire, intocmit_nume=None):
     """Genereaza raportul .pdf \"RetDozare\", cu o pagina separata per
     reteta a comenzii, reproducand aceleasi sectiuni ca varianta .xlsx
-    (vezi sablonul tiparit "Cda ...-Ti5-...pdf")."""
+    (vezi sablonul tiparit "Cda ...-Ti5-...pdf").
+
+    intocmit_nume: numele utilizatorului logat, afisat la rubrica
+    "Intocmit" — daca lipseste (None), se foloseste config.INTOCMIT_NUME."""
     if not REPORTLAB_DISPONIBIL:
         raise RuntimeError(
             "Biblioteca 'reportlab' nu este instalata. Ruleaza: pip install reportlab"
         )
+    intocmit_nume = intocmit_nume or INTOCMIT_NUME
 
     spec = ALIAJE_SPEC.get(order.get("tipAliaj"), {})
     doc = SimpleDocTemplate(
-        cale_iesire, pagesize=A4,
-        leftMargin=1.2 * cm, rightMargin=1.2 * cm,
-        topMargin=1.2 * cm, bottomMargin=1.2 * cm,
+        cale_iesire, pagesize=landscape(A4),
+        leftMargin=1.4 * cm, rightMargin=1.4 * cm,
+        topMargin=0.5 * cm, bottomMargin=0.4 * cm,
     )
     stiluri = getSampleStyleSheet()
     stil_logo = ParagraphStyle("LogoRetDozare", parent=stiluri["Heading2"], textColor=colors.HexColor("#1F3864"))
     stil_titlu = ParagraphStyle("TitluRetDozare", parent=stiluri["Normal"], alignment=TA_CENTER, fontName="Helvetica-BoldOblique")
     stil_data = ParagraphStyle("DataRetDozare", parent=stiluri["Normal"], alignment=2)  # TA_RIGHT
-    stil_sectiune = ParagraphStyle("SectiuneRetDozare", parent=stiluri["Heading4"], spaceBefore=10)
+    stil_sectiune = ParagraphStyle("SectiuneRetDozare", parent=stiluri["Heading4"], spaceBefore=5, spaceAfter=2)
 
     stil_tabel_standard = TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
@@ -539,11 +556,15 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire):
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-BoldOblique"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ])
     stil_tabel_fara_antet = TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
         ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ])
 
     toate_datele = construieste_date_retdozare_comanda(order, lots)
@@ -554,14 +575,15 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire):
         nume_mat_lung = [MATERIAL_NUME_RETDOZARE.get(m["id"], m["nume"]) for m in materiale]
         nume_mat_scurt = [MATERIAL_ABREVIERE_BILANT.get(m["id"], m["nume"]) for m in materiale]
 
+        logo_cell = logo_flowable_pdf(latime_cm=3.2) or Paragraph("ZIROM TITANIUM", stil_logo)
         antet = Table([[
-            Paragraph("ZIROM TITANIUM", stil_logo),
+            logo_cell,
             Paragraph(order.get("nume", ""), stil_titlu),
             Paragraph(f"Data: {order.get('data', '')}", stil_data),
         ]], colWidths=[5 * cm, 9 * cm, 4 * cm])
         antet.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
         elemente.append(antet)
-        elemente.append(Spacer(1, 0.3 * cm))
+        elemente.append(Spacer(1, 0.15 * cm))
 
         tabel_spec = Table([
             [spec.get("titlu_formular", spec.get("nume", "")), "", "", "", "", "", "", "Comanda", numar_comanda(order), "", ""],
@@ -589,7 +611,7 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire):
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]))
         elemente.append(tabel_spec)
-        elemente.append(Spacer(1, 0.3 * cm))
+        elemente.append(Spacer(1, 0.15 * cm))
 
         date_lot = []
         for mat in materiale:
@@ -602,10 +624,30 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire):
                 fmt(date_ret["stoc_initial"].get(mat["id"], 0.0), 3),
                 pct(val_pct / 100, 2) if val_pct else "",
             ])
-        tabel_lot = Table(date_lot)
+        tabel_lot = Table(date_lot, colWidths=[3.4 * cm, 2.6 * cm, 2.2 * cm, 1.8 * cm])
         tabel_lot.setStyle(stil_tabel_fara_antet)
-        elemente.append(Paragraph("Loturi", stil_sectiune))
-        elemente.append(tabel_lot)
+
+        date_bilant = [[r.get("nume") or "Reteta"] + nume_mat_scurt]
+        if not date_ret["bilant_randuri"]:
+            date_bilant.append(["(nicio bara adaugata la aceasta reteta)"] + [""] * len(materiale))
+        else:
+            for eticheta, valori in date_ret["bilant_randuri"]:
+                date_bilant.append([eticheta] + [fmt(valori.get(m["id"], 0.0), 3) for m in materiale])
+        tabel_bilant = Table(date_bilant, repeatRows=1)
+        tabel_bilant.setStyle(stil_tabel_standard)
+
+        # "Loturi" si "Bilant presare [Kg]" stau UNUL LANGA CELALALT, pe
+        # acelasi rand (ca in sablonul original) — nu unul sub altul —
+        # ca sa incapa toata reteta pe o singura pagina.
+        bloc_lot_bilant = Table([[
+            [Paragraph("Loturi", stil_sectiune), tabel_lot],
+            [Paragraph("Bilant presare [Kg]", stil_sectiune), tabel_bilant],
+        ]], colWidths=[10.2 * cm, None])
+        bloc_lot_bilant.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (1, 0), (1, 0), 18),
+        ]))
+        elemente.append(bloc_lot_bilant)
 
         elemente.append(Paragraph("Initial \u2014 compozitie pe material", stil_sectiune))
         elemente_ordine = ["Ti", "Al", "V", "O", "Fe", "Mo", "Si", "Zr"]
@@ -626,17 +668,6 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire):
         tabel_initial = Table(date_initial, repeatRows=1)
         tabel_initial.setStyle(stil_tabel_standard)
         elemente.append(tabel_initial)
-
-        elemente.append(Paragraph("Bilant presare [Kg]", stil_sectiune))
-        date_bilant = [[r.get("nume") or "Reteta"] + nume_mat_scurt]
-        if not date_ret["bilant_randuri"]:
-            date_bilant.append(["(nicio bara adaugata la aceasta reteta)"] + [""] * len(materiale))
-        else:
-            for eticheta, valori in date_ret["bilant_randuri"]:
-                date_bilant.append([eticheta] + [fmt(valori.get(m["id"], 0.0), 3) for m in materiale])
-        tabel_bilant = Table(date_bilant, repeatRows=1)
-        tabel_bilant.setStyle(stil_tabel_standard)
-        elemente.append(tabel_bilant)
 
         elemente.append(Paragraph("Concentratii tinta in bara [%]", stil_sectiune))
         ordine_elem_conc = [("v", "V"), ("al", "Al"), ("o", "O"), ("fe", "Fe"), ("mo", "Mo"), ("si", "Si"), ("zr", "Zr")]
@@ -661,13 +692,17 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire):
         tabel_portie = Table(date_portie, repeatRows=1)
         tabel_portie.setStyle(stil_tabel_standard)
         elemente.append(tabel_portie)
-        elemente.append(Spacer(1, 1.2 * cm))
+        elemente.append(Spacer(1, 0.2 * cm))
 
         semnaturi = Table([
             ["Sef Sectie Lingouri", "", "Intocmit,"],
-            [SEF_SECTIE_LINGOURI, "", INTOCMIT_NUME],
-        ], colWidths=[6 * cm, 6 * cm, 6 * cm])
-        semnaturi.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9)]))
+            [SEF_SECTIE_LINGOURI, "", intocmit_nume],
+        ], colWidths=[6 * cm, 6 * cm, 6 * cm], splitByRow=0)
+        semnaturi.setStyle(TableStyle([
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("TOPPADDING", (0, 0), (-1, -1), 1),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ]))
         elemente.append(semnaturi)
         elemente.append(Paragraph(f"Formular Cod:{COD_FORMULAR_RETDOZARE}", ParagraphStyle(
             "CodFormularRetDozare", parent=stiluri["Normal"], alignment=2, fontSize=8,

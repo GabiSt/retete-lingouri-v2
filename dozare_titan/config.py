@@ -44,7 +44,41 @@ MATERIALE = [
 ]
 ORDINE_MAT = [m["id"] for m in MATERIALE]
 
-ADMIN_PASS = "titan2026"
+
+def _director_resurse():
+    """Folderul de resurse (assets) al aplicatiei — functioneaza atat rulat
+    ca script Python cat si compilat cu PyInstaller (caz in care fisierele
+    adaugate cu --add-data "dozare_titan/assets<sep>dozare_titan/assets",
+    unde <sep> e ";" pe Windows si ":" pe Linux/Mac, ajung in sys._MEIPASS)."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, "dozare_titan", "assets")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+
+
+# Logo-ul oficial, afisat in antetul documentelor generate (Fisa limita,
+# RetDozare — .xlsx si .pdf). PANA PRIMESTI LOGO-UL OFICIAL, la aceasta cale
+# se afla un PLACEHOLDER generat automat — inlocuieste DOAR fisierul
+# "logo.png" din dozare_titan/assets/ cu imaginea oficiala (acelasi nume);
+# codul nu trebuie schimbat. Daca fisierul lipseste, documentele revin
+# automat la varianta text "ZIROM TITANIUM".
+CALE_LOGO = os.path.join(_director_resurse(), "logo.png")
+
+# ---------------------------------------------------------------------------
+# Conturi de utilizator — inlocuiesc vechea parola unica de admin.
+# "editor": True => drept de editare (adaugare/editare loturi, creare si
+# stergere de comenzi/retete/bare, aplicare consum pe stoc). Fara acest
+# drept, contul poate doar vizualiza — nimic nu poate fi modificat.
+# "nume" e numele complet care apare la rubrica "Intocmit" pe documentele
+# generate (Fisa limita, RetDozare) — se completeaza automat cu numele
+# contului cu care esti logat. Sef Sectie Lingouri ramane FIX
+# (SEF_SECTIE_LINGOURI mai jos), indiferent cine e logat.
+#
+# Editeaza aceasta lista ca sa adaugi/schimbi/stergi conturi reale.
+# ---------------------------------------------------------------------------
+UTILIZATORI = [
+    {"utilizator": "georgeta", "parola": "titan2026", "nume": "Racasanu Georgeta", "editor": True},
+    {"utilizator": "vizitator", "parola": "vizitator", "nume": "Vizitator", "editor": False},
+]
 
 # Folder ASCUNS (nume cu punct in fata, ca pe Linux/Mac), asezat langa
 # exe-ul aplicatiei (sau langa main.py, daca ruleaza ca script) — NU in

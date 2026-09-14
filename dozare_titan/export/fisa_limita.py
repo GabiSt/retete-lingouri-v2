@@ -25,6 +25,7 @@ from ..config import (
     BENEFICIAR_IMPLICIT, SEF_SECTIE_LINGOURI, INTOCMIT_NUME, COD_FORMULAR_FISA_LIMITA,
 )
 from ..utils import to_float, fmt, numar_comanda
+from .logo import adauga_logo_xlsx, logo_flowable_pdf
 
 _MATERIALE_PRIN_ID = {m["id"]: m for m in MATERIALE}
 
@@ -142,16 +143,20 @@ def _randuri_fisa_limita(consum):
     return randuri
 
 
-def genereaza_fisa_limita_xlsx(order, consum, cale_iesire):
+def genereaza_fisa_limita_xlsx(order, consum, cale_iesire, intocmit_nume=None):
     """Genereaza fisierul .xlsx \"Fisa limita -cda\", cu structura identica
     formularului tiparit: antet cu Comanda/Beneficiar/Grad aliaj/numar de
     bucati lingou, titlu centrat, apoi cate un rand per LOT efectiv
     consumat (nu per material — un material cu doua loturi apare pe doua
-    randuri), cu semnaturile standard la final."""
+    randuri), cu semnaturile standard la final.
+
+    intocmit_nume: numele utilizatorului logat, afisat la rubrica
+    "Intocmit" — daca lipseste (None), se foloseste config.INTOCMIT_NUME."""
     if not OPENPYXL_DISPONIBIL:
         raise RuntimeError(
             "Biblioteca 'openpyxl' nu este instalata. Ruleaza: pip install openpyxl"
         )
+    intocmit_nume = intocmit_nume or INTOCMIT_NUME
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -170,7 +175,8 @@ def genereaza_fisa_limita_xlsx(order, consum, cale_iesire):
     # --- Antet: data (dreapta-sus), apoi Comanda / Beneficiar / Grad / -
     # numar buc. lingou (stanga, sub logo) -------------------------------
     ws.cell(row=1, column=5, value=order.get("data", "")).alignment = Alignment(horizontal="right")
-    ws.cell(row=1, column=1, value="ZIROM TITANIUM").font = Font(bold=True, size=13, color="1F3864")
+    if not adauga_logo_xlsx(ws, "A1", latime_px=120):
+        ws.cell(row=1, column=1, value="ZIROM TITANIUM").font = Font(bold=True, size=13, color="1F3864")
 
     rand = 3
     ws.cell(row=rand, column=1, value=f"Comanda {numar}").font = bold
@@ -228,7 +234,7 @@ def genereaza_fisa_limita_xlsx(order, consum, cale_iesire):
     ws.cell(row=rand, column=4, value="Intocmit,")
     rand += 1
     ws.cell(row=rand, column=1, value=SEF_SECTIE_LINGOURI)
-    ws.cell(row=rand, column=4, value=INTOCMIT_NUME)
+    ws.cell(row=rand, column=4, value=intocmit_nume)
 
     rand += 3
     ws.cell(row=rand, column=1, value="Page 1")
@@ -243,13 +249,17 @@ def genereaza_fisa_limita_xlsx(order, consum, cale_iesire):
     wb.save(cale_iesire)
 
 
-def genereaza_fisa_limita_pdf(order, consum, cale_iesire):
+def genereaza_fisa_limita_pdf(order, consum, cale_iesire, intocmit_nume=None):
     """Genereaza un raport .pdf cu acelasi continut ca fisa limita .xlsx,
-    pentru arhivare/tiparire."""
+    pentru arhivare/tiparire.
+
+    intocmit_nume: numele utilizatorului logat, afisat la rubrica
+    "Intocmit" — daca lipseste (None), se foloseste config.INTOCMIT_NUME."""
     if not REPORTLAB_DISPONIBIL:
         raise RuntimeError(
             "Biblioteca 'reportlab' nu este instalata. Ruleaza: pip install reportlab"
         )
+    intocmit_nume = intocmit_nume or INTOCMIT_NUME
 
     doc = SimpleDocTemplate(
         cale_iesire, pagesize=A4,
@@ -265,8 +275,9 @@ def genereaza_fisa_limita_pdf(order, consum, cale_iesire):
     spec = ALIAJE_SPEC.get(order.get("tipAliaj"), {})
     numar = numar_comanda(order)
 
+    logo_cell = logo_flowable_pdf(latime_cm=3.6) or Paragraph("ZIROM TITANIUM", stil_logo)
     antet = Table([[
-        Paragraph("ZIROM TITANIUM", stil_logo),
+        logo_cell,
         Paragraph(order.get("data", ""), stil_data),
     ]], colWidths=[12 * cm, 5 * cm])
     antet.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
@@ -317,7 +328,7 @@ def genereaza_fisa_limita_pdf(order, consum, cale_iesire):
 
     tabel_semnaturi = Table([
         ["Sef Sectie Lingouri,", "", "Intocmit,"],
-        [SEF_SECTIE_LINGOURI, "", INTOCMIT_NUME],
+        [SEF_SECTIE_LINGOURI, "", intocmit_nume],
     ], colWidths=[6 * cm, 6 * cm, 5 * cm])
     tabel_semnaturi.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 10)]))
     elemente.append(tabel_semnaturi)
