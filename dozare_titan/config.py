@@ -64,16 +64,25 @@ def _director_resurse():
 CALE_LOGO = os.path.join(_director_resurse(), "logo.png")
 
 # ---------------------------------------------------------------------------
-# Conturi de utilizator — inlocuiesc vechea parola unica de admin.
-# "editor": True => drept de editare (adaugare/editare loturi, creare si
-# stergere de comenzi/retete/bare, aplicare consum pe stoc). Fara acest
-# drept, contul poate doar vizualiza — nimic nu poate fi modificat.
-# "nume" e numele complet care apare la rubrica "Intocmit" pe documentele
-# generate (Fisa limita, RetDozare) — se completeaza automat cu numele
-# contului cu care esti logat. Sef Sectie Lingouri ramane FIX
-# (SEF_SECTIE_LINGOURI mai jos), indiferent cine e logat.
+# Conturi de utilizator — SURSA VECHE, folosita DOAR o singura data, la
+# prima pornire a aplicatiei, ca sa migreze automat in noul sistem de
+# conturi (parole hash-uite, cereri de cont cu aprobare de admin, drepturi
+# de editare/administrare) — vezi dozare_titan/conturi.py.
 #
-# Editeaza aceasta lista ca sa adaugi/schimbi/stergi conturi reale.
+# Dupa prima pornire, conturile reale se gestioneaza din aplicatie:
+#   - un utilizator nou isi cere cont din ecranul de autentificare
+#     ("Creeaza cont nou"), introducand un nume de utilizator (scurt,
+#     folosit doar la login) si un alias (numele complet, care ramane
+#     afisat pe documentele generate — Fisa limita, RetDozare — la rubrica
+#     "Intocmit", indiferent cat de scurt e numele de login);
+#   - un cont cu drept de administrare aproba sau respinge cererea si
+#     acorda drepturi (editare / administrare) din fereastra principala
+#     ("Administrare conturi");
+#   - datele sunt in .dozare_titan/conturi.json, NU mai in acest fisier.
+#
+# Aceasta lista ramane doar ca sablon pentru migrarea initiala — daca
+# .dozare_titan/conturi.json exista deja, e ignorata complet. Sef Sectie
+# Lingouri ramane FIX (SEF_SECTIE_LINGOURI mai jos), indiferent cine e logat.
 # ---------------------------------------------------------------------------
 UTILIZATORI = [
     {"utilizator": "georgeta", "parola": "titan2026", "nume": "Racasanu Georgeta", "editor": True},

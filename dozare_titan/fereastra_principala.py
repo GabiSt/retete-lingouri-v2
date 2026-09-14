@@ -26,7 +26,7 @@ from .stiluri import (
 from .utils import uid, fmt, to_float
 from .calcule import calculeaza_bara, lot_ti, lot_rest, target_ti, material_necesar
 from .persistenta import incarca_date, salveaza_date, _numar_bare_anterioare
-from .dialoguri import DialogLotNou, DialogIstoricLot
+from .dialoguri import DialogLotNou, DialogIstoricLot, DialogAdministrareConturi
 from .export.fisa_limita import (
     gaseste_istoric_lot, calculeaza_consum_comanda,
     genereaza_fisa_limita_xlsx, genereaza_fisa_limita_pdf,
@@ -45,6 +45,7 @@ class FereastraDozareTitan(QWidget):
         self.state = incarca_date()
         self.utilizator = utilizator
         self.poate_edita = bool(utilizator.get("editor"))
+        self.este_admin = bool(utilizator.get("admin"))
         self.se_delogheaza = False
         self.mat_expanded = {m["id"]: True for m in MATERIALE}
         self.order_expanded = {}
@@ -110,16 +111,26 @@ class FereastraDozareTitan(QWidget):
         _clear_layout(self.zona_admin)
         rol = "Editor" if self.poate_edita else "Doar vizualizare"
         culoare_rol = CULOARE_SUCCES if self.poate_edita else CULOARE_GRI_TEXT
-        eticheta = QLabel(f"{self.utilizator.get('nume', '')} \u00b7 {rol}")
+        eticheta = QLabel(f"{self.utilizator.get('alias', '')} \u00b7 {rol}")
         eticheta.setStyleSheet(
             f"color: {culoare_rol}; font-weight: 600; font-size: 11px; "
             f"padding: 4px 10px; border: 1px solid {culoare_rol}; border-radius: 10px;"
         )
         self.zona_admin.addWidget(eticheta)
+        if self.este_admin:
+            btn_admin = QPushButton("Administrare conturi")
+            btn_admin.setStyleSheet(STIL_BUTON_SECUNDAR)
+            btn_admin.clicked.connect(self._administrare_conturi)
+            self.zona_admin.addWidget(btn_admin)
         btn = QPushButton("Delogare")
         btn.setStyleSheet(STIL_BUTON_SECUNDAR)
         btn.clicked.connect(self._delogare)
         self.zona_admin.addWidget(btn)
+
+    def _administrare_conturi(self):
+        cheie_curenta = (self.utilizator.get("utilizator") or "").strip().lower()
+        dialog = DialogAdministrareConturi(cheie_curenta, self)
+        dialog.exec()
 
     def _delogare(self):
         if QMessageBox.question(self, "Confirmare", "Te deloghezi din aplicatie?") != QMessageBox.Yes:
@@ -410,7 +421,7 @@ class FereastraDozareTitan(QWidget):
             cale += ".xlsx"
 
         try:
-            genereaza_fisa_limita_xlsx(order, consum, cale, intocmit_nume=self.utilizator.get("nume"))
+            genereaza_fisa_limita_xlsx(order, consum, cale, intocmit_nume=self.utilizator.get("alias"))
         except Exception as e:
             QMessageBox.critical(self, "Eroare la generare", str(e))
             return
@@ -419,7 +430,7 @@ class FereastraDozareTitan(QWidget):
         pdf_ok, pdf_eroare = True, ""
         if REPORTLAB_DISPONIBIL:
             try:
-                genereaza_fisa_limita_pdf(order, consum, cale_pdf, intocmit_nume=self.utilizator.get("nume"))
+                genereaza_fisa_limita_pdf(order, consum, cale_pdf, intocmit_nume=self.utilizator.get("alias"))
             except Exception as e:
                 pdf_ok, pdf_eroare = False, str(e)
         else:
@@ -491,7 +502,7 @@ class FereastraDozareTitan(QWidget):
             cale += ".xlsx"
 
         try:
-            genereaza_retdozare_xlsx(order, self.state["lots"], cale, intocmit_nume=self.utilizator.get("nume"))
+            genereaza_retdozare_xlsx(order, self.state["lots"], cale, intocmit_nume=self.utilizator.get("alias"))
         except Exception as e:
             QMessageBox.critical(self, "Eroare la generare", str(e))
             return
@@ -500,7 +511,7 @@ class FereastraDozareTitan(QWidget):
         pdf_ok, pdf_eroare = True, ""
         if REPORTLAB_DISPONIBIL:
             try:
-                genereaza_retdozare_pdf(order, self.state["lots"], cale_pdf, intocmit_nume=self.utilizator.get("nume"))
+                genereaza_retdozare_pdf(order, self.state["lots"], cale_pdf, intocmit_nume=self.utilizator.get("alias"))
             except Exception as e:
                 pdf_ok, pdf_eroare = False, str(e)
         else:

@@ -7,10 +7,15 @@ Gestionare stoc de loturi pe materiale si calcul de retete de sarja
 Ruleaza cu:
     python3 main.py
 
-La pornire se cere autentificare (utilizator + parola, vezi
-dozare_titan/config.py -> UTILIZATORI); privilegiile de editare si numele
-afisat la rubrica "Intocmit" pe documentele generate depind de contul cu
-care te loghezi.
+La pornire se cere autentificare (utilizator + parola). Conturile se
+gestioneaza din aplicatie, nu mai in cod: oricine isi poate cere cont nou
+din ecranul de autentificare ("Creeaza cont nou"), iar un cont cu drept de
+administrare il aproba si ii acorda drepturi (editare / administrare) din
+fereastra principala ("Administrare conturi") — vezi dozare_titan/conturi.py.
+Privilegiile de editare si aliasul afisat la rubrica "Intocmit" pe
+documentele generate depind de contul cu care te loghezi; aliasul (numele
+complet) ramane pe documente indiferent cat de scurt e numele de
+utilizator folosit la login.
 
 Structura completa a codului e explicata in README.md si in
 dozare_titan/__init__.py.
