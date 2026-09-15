@@ -49,16 +49,14 @@ jobs:
 
       # Optional: daca vrei ca folderul sa apara automat intr-un GitHub Release
       # atunci cand pui un tag de forma v1.0.0, decomenteaza blocul de mai jos.
-      # (pentru release ai nevoie de o arhiva, nu de un folder brut - vezi
-      # pasul de zip comentat mai jos daca vrei sa activezi asta)
-       - name: Arhiveaza folderul pentru release
-         if: startsWith(github.ref, 'refs/tags/v')
-         run: Compress-Archive -Path dist/dozare_titan/* -DestinationPath dist/DozareTitan-windows.zip
-      
-       - name: Creeaza Release cu arhiva atasata
-         if: startsWith(github.ref, 'refs/tags/v')
-         uses: softprops/action-gh-release@v2
-         with:
-           files: dist/DozareTitan-windows.zip
-         env:
-           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Arhiveaza folderul pentru release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: Compress-Archive -Path dist/dozare_titan/* -DestinationPath dist/DozareTitan-windows.zip
+
+      - name: Creeaza Release cu arhiva atasata
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DozareTitan-windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
