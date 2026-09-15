@@ -177,6 +177,12 @@ def genereaza_fisa_limita_xlsx(order, consum, cale_iesire, intocmit_nume=None):
     ws.cell(row=1, column=5, value=order.get("data", "")).alignment = Alignment(horizontal="right")
     if not adauga_logo_xlsx(ws, "A1", latime_px=120):
         ws.cell(row=1, column=1, value="ZIROM TITANIUM").font = Font(bold=True, size=13, color="1F3864")
+    # Randuri mai inalte decat implicit (15pt), ca logo-ul (~35pt inaltime
+    # la latime_px=120) sa aiba loc fara sa se suprapuna peste "Comanda ..."
+    # de mai jos — necesar mai ales daca logo-ul oficial nu are exact
+    # raportul de aspect lat recomandat in assets/README.md.
+    ws.row_dimensions[1].height = 20
+    ws.row_dimensions[2].height = 20
 
     rand = 3
     ws.cell(row=rand, column=1, value=f"Comanda {numar}").font = bold

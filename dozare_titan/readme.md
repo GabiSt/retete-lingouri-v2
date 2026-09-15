@@ -9,6 +9,29 @@ materiale si calculul retetelor de sarja.
 python3 main.py
 ```
 
+## Compilare in .exe (Windows)
+
+```
+build_windows.bat
+```
+
+sau, manual:
+
+```
+pip install pyinstaller
+pyinstaller --noconfirm dozare_titan.spec
+```
+
+Rezultatul apare in `dist/dozare_titan/dozare_titan.exe`. **Muta/copiaza
+tot folderul `dist/dozare_titan`**, nu doar exe-ul — langa el trebuie sa
+ramana fisierele lui interne, inclusiv `dozare_titan/assets/logo.png`.
+
+**Foloseste intotdeauna `dozare_titan.spec`, nu `pyinstaller main.py`
+direct** — o compilare fara `.spec`/`--add-data` NU include folderul
+`assets` in exe, iar documentele generate (Fisa limita, RetDozare) revin
+automat la textul de rezerva "ZIROM TITANIUM" in loc de logo (fara nicio
+eroare vizibila, deci trece usor neobservat).
+
 ## Structura proiectului
 
 ```

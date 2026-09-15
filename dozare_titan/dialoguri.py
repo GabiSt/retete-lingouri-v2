@@ -75,9 +75,19 @@ class DialogLogin(QDialog):
         rand = QHBoxLayout()
         btn_iesire = QPushButton("Iesire")
         btn_iesire.setStyleSheet(STIL_BUTON_SECUNDAR)
+        # Explicit FARA autoDefault — altfel, in anumite conditii, o
+        # apasare de Enter in campurile de mai sus putea activa acest
+        # buton (deci inchidea toata aplicatia) in loc sa doar verifice
+        # datele introduse. Butonul de iesire trebuie apasat manual, cu
+        # mouse-ul/tab+Enter direct pe el — niciodata din campurile de
+        # utilizator/parola.
+        btn_iesire.setAutoDefault(False)
+        btn_iesire.setDefault(False)
         btn_iesire.clicked.connect(self.reject)
         btn_intra = QPushButton("Intra")
         btn_intra.setStyleSheet(STIL_BUTON_PRINCIPAL)
+        btn_intra.setAutoDefault(True)
+        btn_intra.setDefault(True)
         btn_intra.clicked.connect(self._verifica)
         rand.addWidget(btn_iesire)
         rand.addWidget(btn_intra)
@@ -85,6 +95,7 @@ class DialogLogin(QDialog):
 
         btn_cont_nou = QPushButton("Creeaza cont nou")
         btn_cont_nou.setStyleSheet(STIL_BUTON_SECUNDAR)
+        btn_cont_nou.setAutoDefault(False)
         btn_cont_nou.clicked.connect(self._deschide_creare_cont)
         layout.addWidget(btn_cont_nou)
 
@@ -117,7 +128,7 @@ class DialogLogin(QDialog):
         cont = conturi_mod.gaseste_cont(self.conturi, utilizator)
 
         if cont is None or not conturi_mod.verifica_parola(parola, cont.get("hash"), cont.get("sare")):
-            self.eticheta_eroare.setText("Utilizator sau parola incorecta.")
+            self.eticheta_eroare.setText("Nume de utilizator sau parola gresita.")
             self.camp_parola.clear()
             self.camp_parola.setFocus()
             return
