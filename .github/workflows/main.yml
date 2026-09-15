@@ -29,24 +29,36 @@ jobs:
           pip install pyinstaller
 
       - name: Construieste executabilul (.exe)
+        # Folosim spec-ul din repo (dozare_titan.spec), NU o comanda
+        # "pyinstaller main.py" simpla, pentru ca spec-ul e cel care
+        # include explicit folderul dozare_titan/assets (logo.png) in build.
+        # Fara el, exe-ul nu are de unde sa afle unde e logo-ul si
+        # documentele generate revin la textul de rezerva "ZIROM TITANIUM".
         run: |
-          pyinstaller --noconfirm --onefile --windowed `
-            --name "DozareTitan" `
-            main.py
+          pyinstaller --noconfirm dozare_titan.spec
 
-      # Rezultatul apare in dist/DozareTitan.exe
-      - name: Incarca .exe ca artifact
+      # Spec-ul face un build "onedir" (COLLECT), nu "onefile" -> rezultatul
+      # e un FOLDER intreg: dist/dozare_titan/ (contine dozare_titan.exe
+      # + assets/logo.png langa el). Trebuie incarcat tot folderul, nu doar
+      # exe-ul separat, altfel exe-ul ramane iar fara logo la rulare.
+      - name: Incarca folderul ca artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DozareTitan-windows-exe
-          path: dist/DozareTitan.exe
+          name: DozareTitan-windows
+          path: dist/dozare_titan/
 
-      # Optional: daca vrei ca .exe-ul sa apara automat intr-un GitHub Release
+      # Optional: daca vrei ca folderul sa apara automat intr-un GitHub Release
       # atunci cand pui un tag de forma v1.0.0, decomenteaza blocul de mai jos.
-      # - name: Creeaza Release cu .exe atasat
-      #   if: startsWith(github.ref, 'refs/tags/v')
-      #   uses: softprops/action-gh-release@v2
-      #   with:
-      #     files: dist/DozareTitan.exe
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # (pentru release ai nevoie de o arhiva, nu de un folder brut - vezi
+      # pasul de zip comentat mai jos daca vrei sa activezi asta)
+       - name: Arhiveaza folderul pentru release
+         if: startsWith(github.ref, 'refs/tags/v')
+         run: Compress-Archive -Path dist/dozare_titan/* -DestinationPath dist/DozareTitan-windows.zip
+      
+       - name: Creeaza Release cu arhiva atasata
+         if: startsWith(github.ref, 'refs/tags/v')
+         uses: softprops/action-gh-release@v2
+         with:
+           files: dist/DozareTitan-windows.zip
+         env:
+           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
