@@ -34,7 +34,13 @@ from .export.fisa_limita import (
 )
 from .export.retdozare import genereaza_retdozare_xlsx, genereaza_retdozare_pdf
 
-
+class ComboFaraScroll(QComboBox):
+    """QComboBox care ignora scroll-ul rotitei mouse-ului, ca sa nu se
+    schimbe lotul selectat accidental cand utilizatorul doar deruleaza
+    pagina peste combo, fara sa dea click pe el."""
+    def wheelEvent(self, event):
+        event.ignore()
+        
 class FereastraDozareTitan(QWidget):
     def __init__(self, utilizator):
         super().__init__()
@@ -558,7 +564,7 @@ class FereastraDozareTitan(QWidget):
         buton_titlu.clicked.connect(lambda _, oid=order["id"]: self._toggle_comanda(oid))
         antet_layout.addWidget(buton_titlu)
 
-        combo_aliaj = QComboBox()
+        combo_aliaj = ComboFaraScroll()
         combo_aliaj.setStyleSheet(STIL_CAMP)
         combo_aliaj.setToolTip("Tipul de aliaj al comenzii \u2014 determina limitele chimice si formatul RetDozare folosite")
         tip_curent = order.get("tipAliaj", ALIAJ_IMPLICIT)
@@ -724,7 +730,7 @@ class FereastraDozareTitan(QWidget):
             if not necesar:
                 eticheta_widget.setStyleSheet(f"color: {CULOARE_GRI_TEXT}; font-size: 10px; font-style: italic;")
             bloc.addWidget(eticheta_widget)
-            combo = QComboBox()
+            combo = ComboFaraScroll()
             combo.setStyleSheet(STIL_CAMP)
             combo.setEnabled(necesar and self.poate_edita)
             combo.addItem("\u2014 alege lot \u2014" if necesar else "\u2014 neutilizat \u2014", "")
