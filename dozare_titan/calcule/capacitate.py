@@ -6,12 +6,16 @@ Se face doar DESFASURAREA: bara cu bara, cu consumul pe care il aduce
 fiecare la pasul ei si cu restul ramas din fiecare lot dupa acel pas.
 Consumul se aplica apoi O SINGURA DATA, pentru toata reteta.
 
-Cand un stoc se termina, prima bara care nu mai incape complet devine
-"bara de report": isi pastreaza dozarea calculata pe reteta curenta, ia
-din lotul curent tot ce a mai ramas (daca a mai ramas ceva) si intra in
-reteta urmatoare doar cu diferenta, care se consuma din lotul nou. Daca
-se termina mai multe materiale in acelasi timp, regula se aplica identic
-pentru fiecare dintre ele, independent.
+Regula pentru bara care nu mai incape (validata pe date reale de
+productie, tab "Retete" al unui RetDozare existent): bara respectiva NU
+se considera partial executata. Niciun material nu se scade din loturile
+curente pentru ea, CU O SINGURA EXCEPTIE: materialul (sau materialele)
+care chiar s-au terminat isi cedeaza restul ramas, ca sa nu se piarda —
+diferenta se completeaza din lotul nou. Toate celelalte materiale ale
+acelei bare raman neatinse si se dozeaza normal, din loturile selectate,
+cand bara respectiva ruleaza efectiv in reteta urmatoare (deci NU sunt
+tratate ca "report" — continua pur si simplu cu lotul lor, eventual
+acelasi lot, daca nu s-a schimbat).
 
 Modulul e PUR: doar calculeaza, nu modifica niciun lot si nicio reteta.
 """
@@ -41,8 +45,10 @@ def desfasoara_reteta(dozare_bara, resturi, nr_bare, consum_report=None):
       nr_bare       -- numarul de bare cerut pe reteta (cunoscut dinainte)
       consum_report -- optional, dict {material_id: kg} pe care o bara de
                        report MOSTENITA din reteta anterioara il mai are de
-                       consumat din loturile ACESTEI retete. Se scade
-                       inaintea barei 1, pentru ca reportul are prioritate.
+                       consumat din loturile ACESTEI retete (doar pentru
+                       materialul/materialele care s-au terminat acolo).
+                       Se scade inaintea barei 1, pentru ca reportul are
+                       prioritate fata de barele noi.
 
     Returneaza dictionarul de desfasurare (vezi cheile la final).
     """
@@ -60,7 +66,7 @@ def desfasoara_reteta(dozare_bara, resturi, nr_bare, consum_report=None):
         report_lipsa[k] = r2(report[k] - luat)
         disponibil[k] = r2(disponibil[k] - luat)
 
-    # --- Cate bare INTREGI mai incap dupa report ----------------------
+    # --- Cate bare INTREGI incap dupa report ---------------------------
     # Limita e data de materialul care se termina primul. Materialele cu
     # doza 0 (element tinta 0%) nu limiteaza nimic si sunt ignorate.
     capacitate_pe_material = {}
@@ -80,47 +86,79 @@ def desfasoara_reteta(dozare_bara, resturi, nr_bare, consum_report=None):
         key=ORDINE_MAT.index,
     )
 
-    # --- Desfasurarea pas cu pas, bara cu bara ------------------------
+    # --- Desfasurarea barelor care CHIAR se executa (bare_intregi) -----
+    # Fiecare bara de aici incape integral, la toate materialele — de-aia
+    # se scade normal, din toate stocurile deodata.
     ramas = dict(disponibil)
     pasi = []
-    for i in range(1, nr_bare + 1):
+    for i in range(1, bare_intregi + 1):
         pas = {"bara": i, "materiale": {}, "incape": True, "materialeLipsa": []}
         for k in ORDINE_MAT:
             if doza[k] <= TOLERANTA_KG:
                 continue
             inainte = ramas[k]
-            incape_k = doza[k] <= inainte + TOLERANTA_KG
-            din_curent = doza[k] if incape_k else max(0.0, inainte)
-            din_nou = 0.0 if incape_k else doza[k] - din_curent
-            ramas[k] = r2(inainte - din_curent)
+            ramas[k] = r2(inainte - doza[k])
             pas["materiale"][k] = {
                 "necesar": r2(doza[k]),
                 "restInainte": r2(inainte),
-                "dinLotCurent": r2(din_curent),
-                "dinLotNou": r2(din_nou),
+                "dinLotCurent": r2(doza[k]),
+                "dinLotNou": 0.0,
                 "restDupa": ramas[k],
-                "incape": incape_k,
+                "incape": True,
             }
-            if not incape_k:
-                pas["incape"] = False
-                pas["materialeLipsa"].append(k)
         pasi.append(pas)
 
     # --- Bara de report NOUA (prima care nu mai incape) ---------------
+    # NU se considera partial executata: singurul (singurele) material(e)
+    # care se scad acum din loturile curente sunt cele care CHIAR se
+    # termina (limitante) — restul asteapta neatins, sa fie dozat normal
+    # cand bara asta ruleaza efectiv in reteta urmatoare.
     bara_report = None
     if bare_intregi < nr_bare:
-        pas_report = pasi[bare_intregi]
+        materiale_pas = {}
+        for k in ORDINE_MAT:
+            if doza[k] <= TOLERANTA_KG:
+                continue
+            if k in limitante:
+                din_curent = r2(max(0.0, ramas[k]))
+                din_nou = r2(doza[k] - din_curent)
+                incape_k = False
+            else:
+                din_curent = 0.0
+                din_nou = 0.0
+                incape_k = True
+            materiale_pas[k] = {
+                "necesar": r2(doza[k]),
+                "restInainte": r2(ramas[k]),
+                "dinLotCurent": din_curent,
+                "dinLotNou": din_nou,
+                # restDupa ramane neschimbat pentru materialele care nu
+                # limiteaza — nu s-a consumat nimic din ele inca.
+                "restDupa": 0.0 if k in limitante else r2(ramas[k]),
+                "incape": incape_k,
+            }
+        pasi.append({
+            "bara": bare_intregi + 1,
+            "materiale": materiale_pas,
+            "incape": False,
+            "materialeLipsa": list(limitante),
+        })
         bara_report = {
-            "index": pas_report["bara"],
-            "materiale": pas_report["materiale"],
-            # Ce mai ia din loturile ACESTEI retete (resturile ramase)...
-            "dinLotCurent": {k: v["dinLotCurent"] for k, v in pas_report["materiale"].items()},
-            # ...si ce ramane de consumat din lotul NOU, in reteta urmatoare.
-            "dinLotNou": {k: v["dinLotNou"] for k, v in pas_report["materiale"].items()},
+            "index": bare_intregi + 1,
+            "materiale": materiale_pas,
+            # Ce mai ia din loturile ACESTEI retete (doar materialul/
+            # materialele limitante; restul e 0 — nu s-a atins nimic).
+            "dinLotCurent": {k: v["dinLotCurent"] for k, v in materiale_pas.items()},
+            # ...si ce ramane de consumat din lotul NOU, in reteta urmatoare
+            # (tot doar la materialele limitante).
+            "dinLotNou": {k: v["dinLotNou"] for k, v in materiale_pas.items()},
         }
+        for k in limitante:
+            ramas[k] = 0.0
 
     # Consumul total al retetei din loturile curente: reportul mostenit +
-    # barele intregi + ce mai apuca sa ia bara de report noua.
+    # barele intregi + resturile luate de bara de report (doar la
+    # materialele care s-au terminat chiar aici).
     consum_total = {}
     for k in ORDINE_MAT:
         total = report_acoperit[k] + doza[k] * bare_intregi
@@ -143,5 +181,8 @@ def desfasoara_reteta(dozare_bara, resturi, nr_bare, consum_report=None):
         "pasi": pasi,
         "baraReport": bara_report,
         "consumTotalReteta": consum_total,
+        # Ce ramane cu adevarat disponibil dupa aceasta reteta, pentru
+        # materialele care NU au limitat (limitantele ajung la 0, pentru
+        # ca bara de report le-a golit complet pe cele ramase).
         "resturiFinale": {k: ramas.get(k, r2(disponibil[k])) for k in ORDINE_MAT},
     }
