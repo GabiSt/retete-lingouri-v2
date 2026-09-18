@@ -8,17 +8,18 @@ variabila `etichete_doza` din __init__.
 from datetime import date
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .config import MATERIALE
+from .config import MATERIALE, ORDINE_MAT
 from . import conturi as conturi_mod
 from .stiluri import STIL_BUTON_PRINCIPAL, STIL_BUTON_SECUNDAR, STIL_BUTON_PERICOL, STIL_CAMP, CULOARE_EROARE, CULOARE_SUCCES, CULOARE_GRI_TEXT, CULOARE_BORDURA, CULOARE_FUNDAL_SECTIUNE
-from .utils import fmt, to_float
-from .calcule import lot_ti, lot_rest
+from .utils import fmt, to_float, r2
+from .calcule import lot_ti, lot_rest, nume_material
 
 
 class DialogLogin(QDialog):
@@ -437,7 +438,7 @@ class DialogLotNou(QDialog):
 
         self.camp_nr_lot = QLineEdit(lot.get("nrLot", "") if self.editare else "")
         self.camp_nr_lot.setPlaceholderText("ex. TL-2026-014")
-        self.camp_stoc = QLineEdit(fmt(lot.get("stocIntrare"), 3) if self.editare else "")
+        self.camp_stoc = QLineEdit(fmt(lot.get("stocIntrare"), 2) if self.editare else "")
         self.camp_stoc.setPlaceholderText("0")
 
         grid.addWidget(QLabel("Nr. LOT"), 0, 0)
@@ -447,7 +448,7 @@ class DialogLotNou(QDialog):
 
         self.camp_consum = None
         if self.editare:
-            self.camp_consum = QLineEdit(fmt(lot.get("consum"), 3))
+            self.camp_consum = QLineEdit(fmt(lot.get("consum"), 2))
             grid.addWidget(QLabel("Consum (kg)"), 0, 2)
             grid.addWidget(self.camp_consum, 1, 2)
 
@@ -464,7 +465,20 @@ class DialogLotNou(QDialog):
 
         layout.addLayout(grid)
 
-        campuri_stil = [self.camp_nr_lot, self.camp_stoc] + list(self.campuri_doza.values())
+        # Concentratia de Ti se poate introduce DIRECT de la tastatura (din
+        # buletinul de analiza al furnizorului). Daca campul ramane gol, Ti
+        # se calculeaza automat ca pana acum (100 - suma elementelor, sau
+        # 60% fix la TiO2, sau 0% la materialele fara Ti).
+        rand_ti = QHBoxLayout()
+        rand_ti.addWidget(QLabel("Ti % (manual, optional)"))
+        ti_initial = lot.get("dozaTi") if self.editare else None
+        self.camp_ti = QLineEdit(fmt(ti_initial, 3) if ti_initial not in (None, "", False) else "")
+        self.camp_ti.setPlaceholderText("gol = calculat automat")
+        self.camp_ti.textChanged.connect(self._actualizeaza_preview_ti)
+        rand_ti.addWidget(self.camp_ti)
+        layout.addLayout(rand_ti)
+
+        campuri_stil = [self.camp_nr_lot, self.camp_stoc, self.camp_ti] + list(self.campuri_doza.values())
         if self.camp_consum is not None:
             campuri_stil.append(self.camp_consum)
         for camp in campuri_stil:
@@ -511,9 +525,15 @@ class DialogLotNou(QDialog):
         layout.addLayout(rand_btn)
 
     def _actualizeaza_preview_ti(self):
+        manual = self.camp_ti.text().strip() if hasattr(self, "camp_ti") else ""
+        if manual:
+            self.eticheta_ti.setText(
+                f"Ti introdus manual: {to_float(manual):.3f}% (are prioritate)"
+            )
+            return
         total = sum(to_float(c.text()) for c in self.campuri_doza.values())
         titlu = self.windowTitle()
-        if "TiO2" in titlu:
+        if "TiO2" in titlu or "TiO\u2082" in titlu:
             self.eticheta_ti.setText("Ti: 60% (fix)")
         elif "Burete" in titlu or "SiTi" in titlu:
             self.eticheta_ti.setText(f"Ti calculat: {100 - total:.3f}%")
@@ -533,9 +553,14 @@ class DialogLotNou(QDialog):
         if consum < 0:
             self.eticheta_eroare.setText("Consumul nu poate fi negativ.")
             return
+        manual_ti = self.camp_ti.text().strip()
+        if manual_ti and not (0 <= to_float(manual_ti) <= 100):
+            self.eticheta_eroare.setText("Concentratia de Ti trebuie sa fie intre 0 si 100%.")
+            return
         rezervare_id = self.combo_rezervare.currentData()
         self.rezultat = {
-            "nrLot": nr_lot, "stocIntrare": stoc, "consum": consum,
+            "nrLot": nr_lot, "stocIntrare": r2(stoc), "consum": r2(consum),
+            "dozaTi": r2(manual_ti) if manual_ti else None,
             "data": self.lot_original.get("data") if self.editare else date.today().strftime("%d.%m.%Y"),
             "rezervatComandaId": rezervare_id,
             "rezervatComandaNume": self.combo_rezervare.currentText() if rezervare_id else None,
@@ -614,3 +639,131 @@ class DialogIstoricLot(QDialog):
         btn_inchide.setStyleSheet(STIL_BUTON_PRINCIPAL)
         btn_inchide.clicked.connect(self.accept)
         layout.addWidget(btn_inchide)
+
+
+class DialogCapacitateReteta(QDialog):
+    """Arata desfasurarea bara cu bara a unei retete: ce consuma fiecare
+    bara la pasul ei si cat mai ramane din fiecare lot dupa acel pas.
+
+    Nu aplica nimic pe stoc — doar afiseaza. Aplicarea se face din
+    fereastra principala, o singura data, pentru toata reteta.
+    """
+
+    def __init__(self, desf, parent=None, poate_aplica=True):
+        super().__init__(parent)
+        self.setWindowTitle("Capacitate reteta \u2014 desfasurare pe bare")
+        self.resize(940, 580)
+        self.actiune = None
+        self.desf = desf
+
+        layout = QVBoxLayout(self)
+
+        # Doar materialele care chiar intra in amestec (doza > 0).
+        self.materiale = [k for k in ORDINE_MAT if desf["dozareBara"].get(k, 0) > 0]
+
+        # --- Rezumatul de sus -----------------------------------------
+        if desf["bareRamase"] > 0 and desf["baraReport"]:
+            limitante = ", ".join(nume_material(k) for k in desf["materialeLimitante"])
+            rezumat = (
+                f"<b>Incap {desf['bareIntregi']} bare intregi</b> din cele "
+                f"{desf['nrBareCerut']} cerute. Se termina: <b>{limitante}</b>.<br>"
+                f"Bara {desf['baraReport']['index']} ia tot ce mai ramane din loturile "
+                f"curente si trece cu diferenta pe o reteta noua; dupa ea mai raman "
+                f"{desf['bareRamase'] - 1} bare de turnat acolo."
+            )
+            culoare = CULOARE_EROARE
+        else:
+            rezumat = (
+                f"<b>Toate cele {desf['nrBareCerut']} bare incap</b> in loturile "
+                f"selectate. Capacitatea maxima a loturilor curente este de "
+                f"{desf['capacitateMaxima']} bare."
+            )
+            culoare = CULOARE_SUCCES
+        et = QLabel(rezumat)
+        et.setWordWrap(True)
+        et.setStyleSheet(f"color: {culoare}; font-size: 12px;")
+        layout.addWidget(et)
+
+        if any(desf["reportMostenit"].get(k, 0) > 0 for k in ORDINE_MAT):
+            et_rep = QLabel(
+                "Reteta contine o bara de report din reteta anterioara \u2014 "
+                "consumul ei se scade primul din loturile de aici."
+            )
+            et_rep.setWordWrap(True)
+            et_rep.setStyleSheet(f"color: {CULOARE_GRI_TEXT}; font-size: 11px;")
+            layout.addWidget(et_rep)
+
+        # --- Tabelul de desfasurare -----------------------------------
+        coloane = ["Bara"]
+        for k in self.materiale:
+            coloane += [f"{nume_material(k)}\nconsum (kg)", f"{nume_material(k)}\nrest lot (kg)"]
+        coloane.append("Stare")
+
+        tabel = QTableWidget(len(desf["pasi"]), len(coloane))
+        tabel.setHorizontalHeaderLabels(coloane)
+        tabel.verticalHeader().setVisible(False)
+        tabel.setEditTriggers(QTableWidget.NoEditTriggers)
+        tabel.setStyleSheet(
+            f"QTableWidget {{ border: none; gridline-color: {CULOARE_BORDURA}; }}"
+            f"QHeaderView::section {{ background-color: white; color: {CULOARE_GRI_TEXT}; "
+            f"border: none; border-bottom: 1px solid {CULOARE_BORDURA}; padding: 6px; font-size: 10.5px; }}"
+        )
+
+        for rand, pas in enumerate(desf["pasi"]):
+            tabel.setItem(rand, 0, QTableWidgetItem(f"Bara {pas['bara']}"))
+            col = 1
+            for k in self.materiale:
+                m = pas["materiale"].get(k, {})
+                if m.get("dinLotNou", 0) > 0:
+                    it_consum = QTableWidgetItem(
+                        f"{fmt(m.get('dinLotCurent'), 2)} + {fmt(m.get('dinLotNou'), 2)} din lot nou"
+                    )
+                    it_consum.setForeground(QColor(CULOARE_EROARE))
+                else:
+                    it_consum = QTableWidgetItem(fmt(m.get("dinLotCurent"), 2))
+                it_consum.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                tabel.setItem(rand, col, it_consum)
+
+                it_rest = QTableWidgetItem(fmt(m.get("restDupa"), 2))
+                it_rest.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if not m.get("incape", True):
+                    it_rest.setForeground(QColor(CULOARE_EROARE))
+                tabel.setItem(rand, col + 1, it_rest)
+                col += 2
+
+            if pas["incape"]:
+                stare = QTableWidgetItem("OK")
+                stare.setForeground(QColor(CULOARE_SUCCES))
+            else:
+                lipsa = ", ".join(nume_material(k) for k in pas["materialeLipsa"])
+                stare = QTableWidgetItem(f"Nu incape \u2014 {lipsa}")
+                stare.setForeground(QColor(CULOARE_EROARE))
+            tabel.setItem(rand, col, stare)
+
+        tabel.resizeColumnsToContents()
+        tabel.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(tabel)
+
+        # --- Butoane ---------------------------------------------------
+        rand_btn = QHBoxLayout()
+        btn_inchide = QPushButton("Inchide")
+        btn_inchide.setStyleSheet(STIL_BUTON_SECUNDAR)
+        btn_inchide.clicked.connect(self.reject)
+        rand_btn.addWidget(btn_inchide)
+
+        if poate_aplica:
+            eticheta_btn = (
+                "Aplica consumul pe toata reteta si creeaza reteta urmatoare"
+                if desf["bareRamase"] > 0 else
+                "Aplica consumul pe toata reteta"
+            )
+            btn_aplica = QPushButton(eticheta_btn)
+            btn_aplica.setStyleSheet(STIL_BUTON_PRINCIPAL)
+            btn_aplica.clicked.connect(self._aplica)
+            rand_btn.addWidget(btn_aplica)
+
+        layout.addLayout(rand_btn)
+
+    def _aplica(self):
+        self.actiune = "aplica"
+        self.accept()

@@ -9,14 +9,23 @@ si sa le folosesti direct de acolo, fara sa modifici acest fisier.
 """
 
 from ..config import ORDINE_MAT
-from ..utils import to_float
+from ..utils import to_float, r2
 
 
 def lot_ti(lot):
     """Calculeaza procentul de Titan din lot.
 
-    Doar Burete Ti si TiO2 contin Ti.
+    Daca lotul are o concentratie de Ti introdusa MANUAL de la tastatura
+    (campul "dozaTi" din DialogLotNou), aceea are prioritate absoluta —
+    buletinul de analiza al furnizorului bate orice formula. Doar daca
+    acel camp e gol se cade inapoi pe calculul automat de mai jos.
+
+    Altfel, doar Burete Ti si TiO2 contin Ti.
     """
+    manual = lot.get("dozaTi")
+    if manual not in (None, "", False):
+        return to_float(manual)
+
     material = lot.get("material", "")
 
     # Burete Ti si Prealiaj SiTi: Ti = 100 - (toate celelalte elemente dozate)
@@ -43,7 +52,7 @@ def lot_ti(lot):
 
 
 def lot_rest(lot):
-    return to_float(lot.get("stocIntrare")) - to_float(lot.get("consum"))
+    return r2(to_float(lot.get("stocIntrare")) - to_float(lot.get("consum")))
 
 
 def target_ti(target):

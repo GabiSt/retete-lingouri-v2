@@ -40,6 +40,11 @@ from .comun import (  # noqa: F401  (re-exportate pentru comoditate)
     _componente_loturi,
     _rezumat_calcul,
 )
+from .capacitate import (  # noqa: F401  (re-exportate pentru comoditate)
+    desfasoara_reteta,
+    nume_material,
+    TOLERANTA_KG,
+)
 from ..utils import to_float
 
 

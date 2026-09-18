@@ -50,3 +50,18 @@ def to_float(v, implicit=0.0):
         return float(v)
     except (TypeError, ValueError):
         return implicit
+
+
+def r2(v, implicit=0.0):
+    """Rotunjeste o valoare de stoc la 2 zecimale.
+
+    Toate cantitatile de stoc (stoc intrare, consum, rest) trec prin
+    aceasta functie, ca sa nu se acumuleze zecimale fantoma din calculele
+    in virgula mobila (ex. 12.299999999999999 kg in loc de 12.30 kg).
+    """
+    try:
+        if v is None or v == "":
+            return implicit
+        return round(float(v), 2)
+    except (TypeError, ValueError):
+        return implicit
