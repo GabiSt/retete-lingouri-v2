@@ -628,7 +628,8 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire, intocmit_nume=None):
             ["", _text_o(spec), pct(spec.get("fe_max"), 2), pct(spec.get("n_max"), 2),
              pct(spec.get("c_max"), 2), pct(spec.get("h_max"), 4), pct(spec.get("al_min"), 2),
              pct(spec.get("al_max"), 2), pct(spec.get("v_min"), 2), pct(spec.get("v_max"), 2)],
-            ["Dozare", pct(to_float(r["target"].get("o")) / 100, 4), "", "", "", "", "",
+            ["Dozare", pct(to_float(r["target"].get("o")) / 100, 4),
+             pct(to_float(r["target"].get("fe")) / 100, 4), "", "", "", "",
              pct(to_float(r["target"].get("al")) / 100, 3), pct(to_float(r["target"].get("v")) / 100, 3), ""],
         ], colWidths=[1.7 * cm] + [1.75 * cm] * 9)
         tabel_spec.setStyle(TableStyle([

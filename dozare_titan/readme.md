@@ -42,6 +42,10 @@ dozare_titan/
     stiluri.py                      culori si stiluri Qt
     calcule/
         comun.py                    functii comune tuturor aliajelor
+        capacitate.py               cate bare incap intr-o reteta + bara de report
+        planificare.py              generarea automata a retetelor din loturile
+                                    comenzii, distributia barelor, aplicarea si
+                                    RETRAGEREA consumului (logica pura, testabila)
         ti6al4v.py                  FORMULA de dozare Ti6Al4V (gata facuta)
         vt9.py                      FORMULA de dozare Ti-VT9 (DE IMPLEMENTAT)
         __init__.py                 calculeaza_bara() -- alege formula dupa tipAliaj
@@ -119,6 +123,85 @@ afiseze Si/Zr/Mo in loc de Al/V, va trebui sa adaptezi coloanele din
 `_scrie_bloc_retdozare_xlsx` si `genereaza_retdozare_pdf`. Fisa limita
 (`export/fisa_limita.py`) nu are nevoie de nicio modificare — lucreaza
 direct cu cantitati pe material, indiferent de aliaj.
+
+## Cum se lucreaza (modul automat)
+
+Tot ce introduce utilizatorul se afla intr-un singur loc: butonul
+**"Loturi si configurare"** de pe comanda. Acolo se pun:
+
+- portia (kg), numarul de presari, numarul **total** de bare al comenzii;
+- compozitia tinta in bara;
+- pe fiecare material, **lista de loturi in ordinea in care intra in
+  comanda** (se adauga din stoc, se muta cu sagetile, se scot cu ✕).
+
+La "Salveaza si genereaza retetele", programul construieste singur toate
+retetele: toarna bare din loturile de pe primul rand, iar cand un lot se
+termina intra automat in urmatorul lot din lista aceluiasi material si
+deschide o reteta noua. **Nu se mai creeaza retete de mana si nu se mai
+aleg loturi pe fiecare reteta.**
+
+Planul NU se scrie direct pe comanda: apare mai intai o fereastra de
+**validare**, cu fiecare reteta propusa (cate bare, ce tip — report sau
+noi — si ce loturi foloseste). Operatorul verifica si apasa "Confirma si
+salveaza"; daca apasa "Renunta", comanda ramane exact cum era. Daca in
+timpul generarii s-a terminat lista de loturi a unui material, planul
+partial apare oricum, cu avertismentul, si un buton "Deschide configurarea
+si adauga lotul" duce direct inapoi acolo, unde operatorul adauga lotul nou
+si genereaza din nou. Mai ramane un singur lucru de facut dupa confirmare:
+aplicarea consumului, reteta cu reteta.
+
+Butonul **"Regenereaza retetele"** reface planul cu stocul de la momentul
+apasarii. Retetele care au deja consumul aplicat pe stoc raman neatinse — se
+rescrie doar ce urmeaza dupa ele.
+
+Comenzile mai vechi, fara loturi alocate pe comanda, raman pe modul manual
+(reteta noua + loturi pe reteta + "Distribuie barele") pana cand se deschide
+"Loturi si configurare".
+
+## Cum se impart barele pe retete (bara de report)
+
+Numarul de bare se seteaza **pe comanda** (ex. 12), nu pe reteta. Regula
+dupa care se umple fiecare reteta, la fel in modul automat si in cel manual:
+
+1. Reteta 1 primeste atatea bare cate incap in loturile ei.
+2. Prima bara care nu mai incape **nu se toarna partial**: trece pe reteta
+   urmatoare si isi **pastreaza dozarea veche** (cea calculata pe loturile
+   retetei din care pleaca) — reteta de presare era deja stabilita in
+   momentul in care s-a constatat ca nu mai ajunge materialul.
+   - din loturile vechi mai ia doar **restul ramas din materialul care s-a
+     terminat** (lotul vechi ramane pe zero, nu se pierde nimic);
+   - **diferenta** la acel material, plus **doza intreaga la toate celelalte
+     materiale**, se consuma din loturile retetei noi.
+3. Restul barelor retetei noi se dozeaza normal, pe loturile noi.
+4. Mecanismul se repeta de la reteta la reteta.
+
+Exemplu real (Cda 26858-Ti5, 12 bare de 900 kg), verificat automat:
+
+```
+Reteta 1: barele 1-4          se termina prealiajul Al-V (lot 360744) la bara 5
+Reteta 2: bara 5 (report, dozarea retetei 1) + barele 6-10
+                              se termina buretele (lot 260215-439) la bara 11
+Reteta 3: bara 11 (report, dozarea retetei 2) + bara 12
+```
+
+Consumul se aplica **o singura data pe reteta**, din "Capacitate reteta /
+desfasurare pe bare". Fiecare reteta are si butonul **"Retrage consumul
+retetei"**, care anuleaza tot ce a scazut reteta din stoc — inclusiv partea
+luata de bara cedata retetei urmatoare, care redevine bara in asteptare.
+Retragerea se face in ordine inversa: daca bara cedata a fost deja
+consumata pe reteta urmatoare, aplicatia cere sa retragi intai acolo.
+
+## Verificare automata
+
+```
+python3 teste/test_cda_26858.py          # distributia, consumul, retragerea
+python3 teste/test_generare_automata.py  # generarea automata din loturile comenzii
+```
+
+Ruleaza fara interfata grafica si compara, pas cu pas, dozarile, distributia
+barelor, consumul si restul fiecarui lot cu Excel-ul de productie
+"Cda 26858-Ti5-2VAR-d600-L1-L4" (tab-urile "DateIntrare" si "Retete"),
+plus simetria retragerii consumului si concordanta cu Fisa limita.
 
 ## Note
 

@@ -28,10 +28,11 @@ from .calcule import (
     calculeaza_bara, lot_ti, lot_rest, target_ti, material_necesar,
     desfasoara_reteta, nume_material, TOLERANTA_KG,
 )
+from .calcule import planificare
 from .persistenta import incarca_date, salveaza_date, _numar_bare_anterioare
 from .dialoguri import (
     DialogLotNou, DialogIstoricLot, DialogAdministrareConturi,
-    DialogCapacitateReteta,
+    DialogCapacitateReteta, DialogConfigurareComanda, DialogPreviewGenerare,
 )
 from .export.fisa_limita import (
     gaseste_istoric_lot, calculeaza_consum_comanda,
@@ -633,17 +634,44 @@ class FereastraDozareTitan(QWidget):
         camp_nr_bare_cda.setReadOnly(not self.poate_edita)
         antet_layout.addWidget(camp_nr_bare_cda)
 
+        automat = bool(order.get("loturiAlocate"))
         if self.poate_edita:
-            btn_distribuie = QPushButton("\u21bb Distribuie barele")
-            btn_distribuie.setStyleSheet(STIL_BUTON_SECUNDAR)
-            btn_distribuie.setToolTip(
-                "Recalculeaza cate bare incap pe fiecare reteta, in functie de loturile "
-                "selectate, si creeaza automat retetele de continuare de care e nevoie."
+            btn_config = QPushButton("\u2699 Loturi si configurare")
+            btn_config.setStyleSheet(STIL_BUTON_PRINCIPAL if not automat else STIL_BUTON_SECUNDAR)
+            btn_config.setToolTip(
+                "Portia, numarul de presari, numarul de bare, compozitia tinta si "
+                "lista de loturi a comenzii, pe material, in ordinea folosirii. "
+                "Din ele se genereaza automat toate retetele \u2014 planul e aratat "
+                "pentru validare inainte sa fie scris pe comanda."
             )
-            btn_distribuie.clicked.connect(
-                lambda _, oid=order["id"]: self._distribuie_bare_comanda(oid)
+            btn_config.clicked.connect(
+                lambda _, oid=order["id"]: self._configureaza_comanda(oid)
             )
-            antet_layout.addWidget(btn_distribuie)
+            antet_layout.addWidget(btn_config)
+
+            if automat:
+                btn_regen = QPushButton("\u26a1 Regenereaza retetele")
+                btn_regen.setStyleSheet(STIL_BUTON_SECUNDAR)
+                btn_regen.setToolTip(
+                    "Reconstruieste retetele din loturile comenzii, cu stocul de acum, "
+                    "si arata planul pentru validare inainte sa il scrie pe comanda. "
+                    "Retetele care au deja consumul aplicat pe stoc raman neatinse."
+                )
+                btn_regen.clicked.connect(
+                    lambda _, oid=order["id"]: self._genereaza_retete_automat(oid)
+                )
+                antet_layout.addWidget(btn_regen)
+            else:
+                btn_distribuie = QPushButton("\u21bb Distribuie barele")
+                btn_distribuie.setStyleSheet(STIL_BUTON_SECUNDAR)
+                btn_distribuie.setToolTip(
+                    "Mod manual: recalculeaza cate bare incap pe fiecare reteta, in "
+                    "functie de loturile alese pe fiecare reteta in parte."
+                )
+                btn_distribuie.clicked.connect(
+                    lambda _, oid=order["id"]: self._distribuie_bare_comanda(oid)
+                )
+                antet_layout.addWidget(btn_distribuie)
 
         n = len(order["retete"])
         asignate = sum(len(r["bare"]) for r in order["retete"])
@@ -681,9 +709,21 @@ class FereastraDozareTitan(QWidget):
             corp_layout = QVBoxLayout(corp)
             corp_layout.setContentsMargins(14, 12, 14, 12)
             corp_layout.setSpacing(12)
+            if automat:
+                corp_layout.addWidget(self._banner(
+                    "Retetele de mai jos sunt construite automat din loturile comenzii "
+                    "(\u201eLoturi si configurare\u201d), cu planul validat de tine la fiecare "
+                    "generare. Cand un lot se termina, bara care nu mai incape trece pe "
+                    "reteta urmatoare cu dozarea veche, iar materialul epuizat continua cu "
+                    "urmatorul lot din lista. Tot ce mai ai de facut e sa aplici consumul, "
+                    "reteta cu reteta.", "info"))
+            elif not order["retete"]:
+                corp_layout.addWidget(self._banner(
+                    "Apasa \u201eLoturi si configurare\u201d ca sa pui loturile comenzii, in "
+                    "ordinea folosirii \u2014 retetele se scriu singure dupa aceea.", "info"))
             for r in order["retete"]:
                 corp_layout.addWidget(self._construieste_card_reteta(order, r))
-            if self.poate_edita:
+            if self.poate_edita and not automat:
                 btn_reteta = QPushButton("+ Reteta noua")
                 btn_reteta.setStyleSheet(STIL_BUTON_SECUNDAR)
                 btn_reteta.clicked.connect(lambda _, oid=order["id"]: self._adauga_reteta(oid))
@@ -691,6 +731,67 @@ class FereastraDozareTitan(QWidget):
             layout.addWidget(corp)
 
         return cadru
+
+    # ------------------------------------------------------------------
+    # Mod automat: loturile stau pe COMANDA, retetele se scriu singure
+    # ------------------------------------------------------------------
+    def _configureaza_comanda(self, order_id):
+        """Deschide configurarea comenzii (portie, presari, bare, tinta si
+        listele de loturi pe material) si, la salvare, regenereaza
+        retetele din ele."""
+        order = self._gaseste_comanda(order_id)
+        dlg = DialogConfigurareComanda(order, self.state["lots"], self,
+                                       poate_edita=self.poate_edita)
+        if dlg.exec() != QDialog.Accepted or not dlg.rezultat:
+            return
+        order.update(dlg.rezultat)
+        salveaza_date(self.state)
+        self._genereaza_retete_automat(order_id)
+
+    def _genereaza_retete_automat(self, order_id):
+        """Construieste retetele comenzii din loturile alocate ei si
+        supune planul VALIDARII operatorului inainte sa fie scris.
+
+        Nimic nu se schimba pe comanda decat daca operatorul apasa
+        \u201eConfirma si salveaza\u201d in fereastra de previzualizare. Retetele
+        care au deja consumul aplicat pe stoc raman neatinse; se
+        genereaza doar ce urmeaza dupa ele.
+        """
+        order = self._gaseste_comanda(order_id)
+        if not order.get("loturiAlocate"):
+            QMessageBox.information(
+                self, "Fara loturi alocate",
+                "Apasa mai intai \u201eLoturi si configurare\u201d si pune loturile comenzii, "
+                "pe material, in ordinea in care intra in productie."
+            )
+            return
+
+        retete, raport = planificare.genereaza_retete(
+            order, self.state["lots"], calculeaza_bara,
+            order.get("tipAliaj", ALIAJ_IMPLICIT),
+        )
+        retete_noi = retete[raport["pastrate"]:]
+
+        if not retete_noi and not raport["avertismente"]:
+            QMessageBox.information(
+                self, "Nimic de generat",
+                "Toate barele comenzii sunt deja plasate pe retete cu consumul aplicat."
+            )
+            return
+
+        dlg = DialogPreviewGenerare(retete_noi, raport, raport["pastrate"], self,
+                                    poate_edita=self.poate_edita)
+        dlg.exec()
+
+        if dlg.actiune == "configureaza":
+            self._configureaza_comanda(order_id)
+            return
+        if dlg.actiune != "confirma":
+            return   # renuntare: comanda ramane exact cum era
+
+        order["retete"] = retete
+        salveaza_date(self.state)
+        self._rebuild_retete()
 
     def _adauga_reteta(self, order_id):
         order = self._gaseste_comanda(order_id)
@@ -851,13 +952,20 @@ class FereastraDozareTitan(QWidget):
         rand_capacitate = QHBoxLayout()
         rand_capacitate.addWidget(btn_capacitate)
 
-        if self.poate_edita and self._are_consum_de_retras(order, r):
+        # Butonul de retragere exista pe FIECARE reteta, tot timpul (nu doar
+        # cand sistemul crede ca are ceva de retras) — daca reteta chiar nu
+        # are consum aplicat, apasarea lui spune asta si nu schimba nimic.
+        if self.poate_edita:
+            are_de_retras = self._are_consum_de_retras(order, r)
             btn_retrage = QPushButton("\u21a9 Retrage consumul retetei")
-            btn_retrage.setStyleSheet(STIL_BUTON_PERICOL)
+            btn_retrage.setStyleSheet(STIL_BUTON_PERICOL if are_de_retras else STIL_BUTON_SECUNDAR)
             btn_retrage.setToolTip(
                 "Anuleaza dintr-o data tot consumul aplicat pe stoc de aceasta reteta "
-                "(toate barele ei, inclusiv bara de report, daca exista) si repune "
-                "cantitatile in loturi."
+                "(toate barele ei, inclusiv bara de report venita din reteta "
+                "anterioara sau cea cedata retetei urmatoare) si repune cantitatile "
+                "in loturi."
+                + ("" if are_de_retras else
+                   "\n\nAceasta reteta nu are momentan niciun consum aplicat pe stoc.")
             )
             btn_retrage.clicked.connect(
                 lambda _, oid=order["id"], rid=r["id"]: self._retrage_consum_total_reteta(oid, rid)
@@ -1379,159 +1487,33 @@ class FereastraDozareTitan(QWidget):
     # Planificarea barelor: barele apartin COMENZII, distributia pe retete
     # rezulta din loturi
     # ------------------------------------------------------------------
+    # Logica propriu-zisa sta in calcule/planificare.py (modul pur, fara
+    # interfata, verificat automat pe Excel-urile de productie — vezi
+    # teste/test_cda_26858.py). Aici raman doar mesajele si confirmarile.
+    #
     # Regula, pe scurt:
     #   - numarul total de bare e cunoscut preliminar, pe COMANDA;
     #   - fiecare reteta primeste atatea bare cate incap in loturile ei;
     #   - PRIMA bara care nu mai incape trece pe reteta urmatoare, dar isi
-    #     pastreaza DOZAREA VECHE (calculata pe loturile retetei anterioare)
-    #     si consuma resturile vechi + diferenta din loturile noi;
+    #     pastreaza DOZAREA VECHE (calculata pe loturile retetei
+    #     anterioare): din loturile vechi mai ia doar restul ramas din
+    #     materialul care s-a terminat, iar diferenta — plus doza intreaga
+    #     la toate celelalte materiale — o consuma din loturile noi;
     #   - TOATE celelalte bare ramase se dozeaza de la zero, pe loturile noi;
     #   - mecanismul se repeta pentru fiecare reteta urmatoare.
 
     def _loturi_selectate(self, r):
         """Loturile efectiv selectate in reteta, indexate pe material."""
-        return {
-            k: next((l for l in self.state["lots"] if l["id"] == r["lotSel"].get(k)), None)
-            for k in ORDINE_MAT
-        }
-
-    def _reteta_continuare(self, order, model):
-        """Reteta noua, goala, in care utilizatorul introduce loturile noi."""
-        return {
-            "id": uid(),
-            "nume": f"Reteta {len(order['retete']) + 1}",
-            "target": dict(model["target"]),
-            "lotSel": {},
-            "bare": [],
-            "numarPresari": model.get("numarPresari") or "1",
-            "portie": model.get("portie"),
-        }
+        return planificare.loturi_selectate(self.state["lots"], r)
 
     def _planifica_comanda(self, order, creeaza_retete=True):
-        """Distribuie barele comenzii pe retete, in functie de loturi.
-
-        Nu modifica barele si nu atinge stocul — doar calculeaza planul.
-        Singurul efect lateral (daca creeaza_retete=True) e adaugarea
-        retetelor de continuare de care e nevoie ca sa incapa toate barele.
-        """
-        total = max(0, int(to_float(order.get("nrBare"))))
-        plan = []
-        report = None      # bara de report care coboara in reteta urmatoare
-        asignate = 0
-        idx = 0
-        limita_retete = len(order["retete"]) + 50   # plasa de siguranta
-
-        while idx < len(order["retete"]) and idx < limita_retete:
-            r = order["retete"][idx]
-            lot_sel = self._loturi_selectate(r)
-
-            # Barele cu consum deja aplicat sunt batute in cuie: raman unde
-            # sunt si se scad din totalul comenzii.
-            aplicate = [b for b in r["bare"] if b.get("consumApplied")]
-            asignate += len(aplicate)
-            ramase = total - asignate
-
-            intrare = {
-                "reteta": r, "report": report, "bareNoi": 0, "bareAsteptare": 0,
-                "reportOut": None, "desf": None, "calc": None, "aplicate": len(aplicate),
-                "stare": "ok",
-            }
-
-            if ramase <= 0:
-                intrare["stare"] = "fara bare ramase"
-                plan.append(intrare)
-                report = None
-                idx += 1
-                continue
-
-            calc = calculeaza_bara(
-                order.get("tipAliaj", ALIAJ_IMPLICIT), r["target"], lot_sel,
-                r.get("portie"), r.get("numarPresari") or 1,
-            )
-            if calc.get("eroare"):
-                # Reteta inca nu are loturile complete: barele stau aici in
-                # asteptare, inclusiv bara de report venita de mai sus.
-                intrare["stare"] = "loturi incomplete"
-                intrare["eroare"] = calc["eroare"]
-                intrare["bareAsteptare"] = max(0, ramase - (1 if report else 0))
-                plan.append(intrare)
-                report = None
-                break
-
-            disponibile = max(0, ramase - (1 if report else 0))
-            resturi = {k: (lot_rest(lot_sel[k]) if lot_sel[k] else 0.0) for k in ORDINE_MAT}
-            desf = desfasoara_reteta(
-                calc["rezultatTotal"], resturi, disponibile,
-                report["ramas"] if report else None,
-            )
-
-            intrare["calc"] = calc
-            intrare["desf"] = desf
-            intrare["bareNoi"] = desf["bareIntregi"]
-            asignate += (1 if report else 0) + desf["bareIntregi"]
-
-            if desf["baraReport"]:
-                intrare["reportOut"] = {
-                    "ramas": {k: v for k, v in desf["baraReport"]["dinLotNou"].items() if v > 1e-9},
-                    "dinLotAnterior": {k: v for k, v in desf["baraReport"]["dinLotCurent"].items() if v > 1e-9},
-                    "calc": calc,
-                    "retetaSursa": r["nume"],
-                }
-
-            plan.append(intrare)
-            report = intrare["reportOut"]
-            idx += 1
-
-            # Mai sunt bare de plasat dar nu mai exista reteta urmatoare?
-            if idx >= len(order["retete"]) and (total - asignate) > 0 and creeaza_retete:
-                order["retete"].append(self._reteta_continuare(order, r))
-
-        return plan
+        return planificare.planifica(
+            order, self.state["lots"], calculeaza_bara,
+            order.get("tipAliaj", ALIAJ_IMPLICIT), creeaza_retete,
+        )
 
     def _aplica_plan(self, order, plan):
-        """Rescrie listele de bare ale retetelor conform planului.
-
-        Barele existente sunt REFOLOSITE (se pastreaza id-ul si eventualele
-        date deja inregistrate), ca sa nu se piarda istoricul la fiecare
-        redistribuire.
-        """
-        for intrare in plan:
-            r = intrare["reteta"]
-            aplicate = [b for b in r["bare"] if b.get("consumApplied")]
-            libere = [b for b in r["bare"] if not b.get("consumApplied")]
-
-            def ia_bara():
-                return libere.pop(0) if libere else {"id": uid(), "consumApplied": False}
-
-            noi = []
-
-            # 1. Bara de report: pastreaza dozarea retetei ANTERIOARE.
-            if intrare["report"]:
-                bar = ia_bara()
-                bar["tipDozare"] = "report"
-                bar["reportRamas"] = intrare["report"]["ramas"]
-                bar["reportDinLotAnterior"] = intrare["report"]["dinLotAnterior"]
-                bar["calcSnapshot"] = intrare["report"]["calc"]
-                bar["retetaSursaDozare"] = intrare["report"]["retetaSursa"]
-                noi.append(bar)
-
-            # 2. Barele normale: se dozeaza pe loturile ACESTEI retete.
-            for _ in range(intrare["bareNoi"]):
-                bar = ia_bara()
-                bar["tipDozare"] = "normal"
-                for cheie in ("reportRamas", "reportDinLotAnterior", "retetaSursaDozare"):
-                    bar.pop(cheie, None)
-                noi.append(bar)
-
-            # 3. Bare in asteptare (reteta inca fara loturi selectate).
-            for _ in range(intrare["bareAsteptare"]):
-                bar = ia_bara()
-                bar["tipDozare"] = "asteptare"
-                for cheie in ("reportRamas", "reportDinLotAnterior", "retetaSursaDozare"):
-                    bar.pop(cheie, None)
-                noi.append(bar)
-
-            r["bare"] = aplicate + noi
+        planificare.aplica_plan(order, plan)
 
     def _distribuie_bare_comanda(self, order_id):
         order = self._gaseste_comanda(order_id)
@@ -1594,30 +1576,13 @@ class FereastraDozareTitan(QWidget):
     # ------------------------------------------------------------------
     def _desfasurare_reteta(self, order, r):
         """(calc, desf, lot_sel) pentru o singura reteta, sau (None, None, None)."""
-        lot_sel = self._loturi_selectate(r)
-        calc = calculeaza_bara(
-            order.get("tipAliaj", ALIAJ_IMPLICIT), r["target"], lot_sel,
-            r.get("portie"), r.get("numarPresari") or 1,
+        calc, desf, lot_sel, eroare = planificare.desfasurare_reteta(
+            order, r, self.state["lots"], calculeaza_bara,
+            order.get("tipAliaj", ALIAJ_IMPLICIT),
         )
-        if calc.get("eroare"):
-            QMessageBox.warning(self, "Eroare", calc["eroare"])
+        if eroare:
+            QMessageBox.warning(self, "Eroare", eroare)
             return None, None, None
-
-        # Bara de report nu consuma o doza intreaga, ci doar diferenta
-        # ramasa; e numarata separat, ca sa nu iasa dubla.
-        report = {k: 0.0 for k in ORDINE_MAT}
-        for bar in r["bare"]:
-            if bar.get("consumApplied"):
-                continue
-            for k, kg in (bar.get("reportRamas") or {}).items():
-                report[k] = report.get(k, 0.0) + to_float(kg)
-
-        normale = [
-            b for b in r["bare"]
-            if not b.get("consumApplied") and not b.get("reportRamas")
-        ]
-        resturi = {k: (lot_rest(lot_sel[k]) if lot_sel[k] else 0.0) for k in ORDINE_MAT}
-        desf = desfasoara_reteta(calc["rezultatTotal"], resturi, len(normale), report)
         return calc, desf, lot_sel
 
     def _capacitate_reteta(self, order_id, recipe_id):
@@ -1638,15 +1603,10 @@ class FereastraDozareTitan(QWidget):
             self._aplica_consum_total_reteta(order_id, recipe_id)
 
     def _aplica_consum_total_reteta(self, order_id, recipe_id):
-        """Aplica O SINGURA DATA consumul intregii retete pe loturi.
+        """Confirma si aplica O SINGURA DATA consumul intregii retete.
 
-        Bara de report (mostenita din reteta anterioara) e un caz special:
-        materialul care s-a terminat acolo isi completeaza acum diferenta
-        din loturile de aici (deja calculat in desf["consumTotalReteta"]).
-        Restul materialelor acelei bare INCA NU au fost consumate nicaieri
-        (au fost lasate neatinse in reteta anterioara) — se consuma abia
-        ACUM, din loturile acestei retete, dar cu DOZAREA VECHE
-        (calcSnapshot al barei), nu cu dozarea recalculata aici.
+        Calculul propriu-zis e in calcule/planificare.py; aici raman doar
+        mesajele catre utilizator.
         """
         order = self._gaseste_comanda(order_id)
         r = self._gaseste_reteta(order_id, recipe_id)
@@ -1654,242 +1614,84 @@ class FereastraDozareTitan(QWidget):
         if desf is None:
             return
 
-        neaplicate = [b for b in r["bare"] if not b.get("consumApplied")]
-        if not neaplicate:
+        if not any(not b.get("consumApplied") for b in r["bare"]):
             QMessageBox.information(
                 self, "Nimic de aplicat",
                 "Toate barele acestei retete au deja consum aplicat."
             )
             return
 
+        are_report = any(v > 0 for v in desf["reportMostenit"].values())
         mesaj = (
             f"Se aplica pe stoc consumul retetei \u201e{r['nume']}\u201d "
             f"({desf['bareIntregi']} bare dozate aici"
-            + (" + bara de report" if any(desf["reportMostenit"].values()) else "")
+            + (" + bara de report, cu dozarea ei veche" if are_report else "")
             + ")."
         )
         if QMessageBox.question(self, "Confirmare", mesaj) != QMessageBox.Yes:
             return
 
-        # --- 0. Cat mai trebuie consumat, in plus fata de desf, pentru
-        #        materialele NElimitante ale barei de report care se
-        #        rezolva acum (vezi docstring). ---------------------------
-        extra_consum = {k: 0.0 for k in ORDINE_MAT}
-        bara_report_curenta = next(
-            (b for b in r["bare"] if b.get("reportRamas") and not b.get("consumApplied")), None
+        ok, text = planificare.aplica_consum_reteta(
+            order, r, self.state["lots"], calculeaza_bara,
+            order.get("tipAliaj", ALIAJ_IMPLICIT),
         )
-        report_rezolvat = bara_report_curenta is not None and not (
-            {k: v for k, v in desf["reportLipsa"].items() if v > 1e-9}
-        )
-        if report_rezolvat:
-            calc_vechi = bara_report_curenta.get("calcSnapshot") or calc
-            doza_veche = calc_vechi["rezultatTotal"]
-            for k in ORDINE_MAT:
-                if desf["reportAcoperit"].get(k, 0.0) > 1e-9:
-                    continue  # material limitant, deja acoperit in desf
-                kg = r2(to_float(doza_veche.get(k, 0.0)))
-                if kg > 1e-9:
-                    extra_consum[k] = kg
-
-        # --- 1. Scaderea efectiva din loturile curente -----------------
-        for k in ORDINE_MAT:
-            kg = r2(desf["consumTotalReteta"].get(k, 0.0) + extra_consum[k])
-            lot = lot_sel[k]
-            if lot is None:
-                if kg > TOLERANTA_KG and material_necesar(k, r["target"]):
-                    QMessageBox.warning(self, "Eroare", f"Lotul pentru {k} nu a fost selectat.")
-                    return
-                continue
-            lot["consum"] = r2(to_float(lot.get("consum")) + kg)
-
-        # --- 2. Inregistrarea pe bare (istoric, Fisa limita) ------------
-        doza = calc["rezultatTotal"]
-        index_pas = 0
-        for bar in r["bare"]:
-            if bar.get("consumApplied"):
-                continue
-
-            # Bara de report isi stinge datoria fata de loturile de aici.
-            if bar.get("reportRamas"):
-                calc_vechi = bar.get("calcSnapshot") or calc
-                doza_veche = calc_vechi["rezultatTotal"]
-                snapshot = bar.get("consumSnapshot") or {}
-
-                # Materialul limitant: doar diferenta acoperita acum.
-                for k in ORDINE_MAT:
-                    kg = desf["reportAcoperit"].get(k, 0.0)
-                    if kg <= 1e-9 or lot_sel[k] is None:
-                        continue
-                    snapshot.setdefault(k, [])
-                    snapshot[k].append({"lotId": lot_sel[k]["id"], "kg": kg})
-
-                ramas_dupa = {k: v for k, v in desf["reportLipsa"].items() if v > 1e-9}
-                if ramas_dupa:
-                    # Inca nu ajunge nici din loturile de aici -> ramane
-                    # in asteptare, coboara mai departe (caz rar).
-                    bar["consumSnapshot"] = snapshot
-                    bar["reportRamas"] = ramas_dupa
-                    continue
-
-                # S-a rezolvat: acum se consuma, cu dozarea VECHE, si
-                # restul materialelor (cele care nu au limitat).
-                for k in ORDINE_MAT:
-                    if desf["reportAcoperit"].get(k, 0.0) > 1e-9:
-                        continue
-                    kg = r2(to_float(doza_veche.get(k, 0.0)))
-                    if kg <= 1e-9 or lot_sel[k] is None:
-                        continue
-                    snapshot.setdefault(k, [])
-                    snapshot[k].append({"lotId": lot_sel[k]["id"], "kg": kg})
-
-                bar["consumSnapshot"] = snapshot
-                bar.pop("reportRamas", None)
-                bar["consumApplied"] = True
-                continue
-
-            pas = desf["pasi"][index_pas] if index_pas < len(desf["pasi"]) else None
-            index_pas += 1
-            if pas is None or not pas["incape"]:
-                continue
-
-            bar["consumSnapshot"] = {
-                k: ([{"lotId": lot_sel[k]["id"], "kg": r2(doza.get(k, 0.0))}]
-                    if lot_sel[k] and doza.get(k, 0.0) > 1e-9 else [])
-                for k in ORDINE_MAT
-            }
-            bar["consumApplied"] = True
-            bar["calcSnapshot"] = calc
+        if not ok:
+            QMessageBox.warning(self, "Eroare", text)
+            return
 
         salveaza_date(self.state)
         self._rebuild_stoc()
         self._rebuild_retete()
-        QMessageBox.information(self, "Succes", "Consumul a fost aplicat pe toata reteta.")
-
-    def _bara_report_trimisa(self, order, r):
-        """(reteta_urmatoare, bara) daca ACEASTA reteta a trimis mai
-        departe o bara de report (adica o bara de-a ei nu a incaput toata
-        aici si a fost mutata, cu dozarea veche, pe reteta urmatoare).
-        Returneaza (None, None) daca nu exista asa ceva sau nu exista
-        reteta urmatoare.
-        """
-        try:
-            idx = order["retete"].index(r)
-        except ValueError:
-            return None, None
-        if idx + 1 >= len(order["retete"]):
-            return None, None
-        r_urm = order["retete"][idx + 1]
-        bar = next(
-            (b for b in r_urm["bare"] if b.get("retetaSursaDozare") == r["nume"]),
-            None,
-        )
-        return r_urm, bar
+        QMessageBox.information(self, "Succes", text)
 
     def _are_consum_de_retras(self, order, r):
         """True daca exista ceva de retras pentru aceasta reteta: fie bare
         cu consum aplicat aici, fie o bara de report trimisa mai departe
-        care a mai luat deja materialul limitant din loturile de aici."""
-        if any(b.get("consumApplied") for b in r["bare"]):
-            return True
-        _, bar_out = self._bara_report_trimisa(order, r)
-        return bool(bar_out and bar_out.get("reportDinLotAnterior"))
+        care a apucat sa ia deja material din loturile de aici."""
+        return planificare.stare_retragere(order, r)["areCeva"]
 
     def _retrage_consum_total_reteta(self, order_id, recipe_id):
-        """Retrage O SINGURA DATA tot consumul aplicat pe stoc pentru o
-        reteta, simetric cu ``_aplica_consum_total_reteta``: repune in
-        loturi tot ce s-a scazut de acolo pentru barele acestei retete.
-
-        Cazul special e bara de report: daca aceasta reteta a "cedat" o
-        bara pe reteta urmatoare (materialul limitant s-a terminat aici),
-        acea bara a consumat deja, direct din loturile ACESTEI retete,
-        partea care s-a mai gasit (``reportDinLotAnterior``) — fara sa
-        fie inregistrata pe nicio bara de-a acestei retete. La retragere,
-        acea cantitate trebuie repusa aici, iar bara redevine "in
-        asteptare" pe reteta urmatoare (isi pastreaza dozarea veche, dar
-        asteapta din nou sa fie rezolvata).
-
-        Daca bara de report a fost deja REZOLVATA pe reteta urmatoare
-        (adica s-a aplicat consumul si acolo), retragerea se blocheaza —
-        trebuie retras mai intai consumul de acolo, in ordine inversa.
+        """Retrage, dintr-o data, tot consumul aplicat pe stoc de o reteta
+        (butonul \u201eRetrage consumul retetei\u201d, disponibil pe fiecare
+        reteta). Simetric cu aplicarea: repune in loturi tot ce s-a scazut
+        de acolo, inclusiv partea luata de bara cedata retetei urmatoare,
+        care redevine bara in asteptare.
         """
         order = self._gaseste_comanda(order_id)
         r = self._gaseste_reteta(order_id, recipe_id)
+        stare = planificare.stare_retragere(order, r)
 
-        aplicate = [b for b in r["bare"] if b.get("consumApplied")]
-        r_urm, bar_out = self._bara_report_trimisa(order, r)
-        out_are_consum = bool(bar_out and bar_out.get("reportDinLotAnterior"))
-        out_rezolvata = bool(bar_out and bar_out.get("consumApplied"))
-
-        if not aplicate and not out_are_consum:
+        if not stare["areCeva"]:
             QMessageBox.information(
                 self, "Nimic de retras",
-                "Aceasta reteta nu are niciun consum aplicat pe stoc."
+                f"Reteta \u201e{r['nume']}\u201d nu are (inca) niciun consum aplicat pe stoc."
             )
             return
 
-        if out_rezolvata:
+        if stare["blocat"]:
             QMessageBox.warning(
                 self, "Nu se poate retrage",
-                f"Bara de report trimisa de aceasta reteta a fost deja consumata "
-                f"pe reteta \u201e{r_urm['nume']}\u201d. Retrage mai intai consumul "
-                "de acolo, apoi revino la aceasta reteta."
+                "Bara de report trimisa de aceasta reteta a fost deja consumata pe "
+                f"reteta \u201e{stare['retetaUrmatoare']['nume']}\u201d. Retrage mai intai "
+                "consumul de acolo, apoi revino la aceasta reteta."
             )
             return
 
         mesaj = (
             f"Retragi tot consumul aplicat pe stoc de reteta \u201e{r['nume']}\u201d "
-            f"({len(aplicate)} bare cu consum aplicat"
-            + (" + bara de report trimisa mai departe" if out_are_consum else "")
+            f"({stare['bareAplicate']} bare cu consum aplicat"
+            + (" + bara de report trimisa mai departe" if stare["reportTrimis"] else "")
             + ")? Stocul va fi repus la loc."
         )
         if QMessageBox.question(self, "Confirmare", mesaj) != QMessageBox.Yes:
             return
 
-        # --- 1. Bare cu consum aplicat AICI (normale, mutate manual, sau
-        #        bare de report inca din reteta anterioara si rezolvate
-        #        chiar in aceasta reteta). ------------------------------
-        for bar in aplicate:
-            era_report_aici = bar.get("tipDozare") == "report" and bar.get("reportDinLotAnterior")
-            for parti in (bar.get("consumSnapshot") or {}).values():
-                intrari = parti if isinstance(parti, list) else [parti]
-                for snap in intrari:
-                    lot = next((l for l in self.state["lots"] if l["id"] == snap["lotId"]), None)
-                    if lot:
-                        lot["consum"] = max(0.0, r2(to_float(lot.get("consum")) - to_float(snap.get("kg"))))
-            bar["consumApplied"] = False
-            bar["consumSnapshot"] = None
-            if era_report_aici:
-                # Redevine bara de report NEREZOLVATA: pastreaza dozarea
-                # veche (calcSnapshot) si reconstruieste ce mai are de
-                # luat din lotul nou, ca sa astepte din nou rezolvarea.
-                doza_veche = (bar.get("calcSnapshot") or {}).get("rezultatTotal", {})
-                din_anterior = bar.get("reportDinLotAnterior") or {}
-                ramas = {
-                    k: r2(to_float(doza_veche.get(k, 0.0)) - to_float(din_anterior.get(k, 0.0)))
-                    for k in din_anterior
-                }
-                bar["reportRamas"] = {k: v for k, v in ramas.items() if v > 1e-9}
-            else:
-                bar.pop("calcSnapshot", None)
-
-        # --- 2. Bara de report TRIMISA mai departe de aceasta reteta:
-        #        repune partea deja luata din loturile de aici si o
-        #        redeschide (nu mai e nici "report rezolvata", nici
-        #        "consum aplicat" - revine "in asteptare"). -------------
-        if out_are_consum:
-            lot_sel = self._loturi_selectate(r)
-            for k, kg in bar_out["reportDinLotAnterior"].items():
-                kg = to_float(kg)
-                lot = lot_sel.get(k)
-                if lot and kg > 1e-9:
-                    lot["consum"] = max(0.0, r2(to_float(lot.get("consum")) - kg))
-            for cheie in ("reportRamas", "reportDinLotAnterior", "retetaSursaDozare", "calcSnapshot"):
-                bar_out.pop(cheie, None)
-            bar_out["tipDozare"] = "asteptare"
-            bar_out["consumApplied"] = False
-            bar_out["consumSnapshot"] = None
+        ok, text = planificare.retrage_consum_reteta(order, r, self.state["lots"])
+        if not ok:
+            QMessageBox.warning(self, "Nu se poate retrage", text)
+            return
 
         salveaza_date(self.state)
         self._rebuild_stoc()
         self._rebuild_retete()
-        QMessageBox.information(self, "Succes", "Consumul retetei a fost retras de pe stoc.")
+        QMessageBox.information(self, "Succes", text)

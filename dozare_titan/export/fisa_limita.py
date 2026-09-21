@@ -89,8 +89,11 @@ def calculeaza_consum_comanda(order, lots):
 
     for r in order.get("retete", []):
         for bar in r.get("bare", []):
-            if not bar.get("consumApplied"):
-                continue
+            # Se aduna TOATE snapshot-urile, nu doar ale barelor complet
+            # rezolvate: un snapshot se scrie exact atunci cand cantitatea
+            # a fost scazuta din stoc. O bara de report inca nerezolvata
+            # are deja inregistrat in el restul luat din loturile retetei
+            # anterioare (lot golit), care trebuie sa apara pe fisa.
             snapshot = bar.get("consumSnapshot") or {}
             for mat_id, parti in snapshot.items():
                 if mat_id not in agregat:

@@ -59,6 +59,12 @@ def _migreaza_comanda(order):
     # inainte de introducerea acestor campuri primesc valorile implicite.
     order.setdefault("beneficiar", BENEFICIAR_IMPLICIT)
     order.setdefault("nrBucLingouri", "")
+    # Loturile alocate comenzii, pe material, in ordinea folosirii
+    # ({material_id: [lot_id, ...]}) — sursa din care se genereaza singure
+    # retetele. Comenzile facute inainte de modul automat nu au campul si
+    # raman pe modul manual (loturi alese pe fiecare reteta) pana cand
+    # utilizatorul deschide "Loturi si configurare".
+    order.setdefault("loturiAlocate", {})
     return order
 
 

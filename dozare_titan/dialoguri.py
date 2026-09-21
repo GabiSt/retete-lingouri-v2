@@ -11,11 +11,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QGridLayout, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QScrollArea,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .config import MATERIALE, ORDINE_MAT
+from .config import MATERIALE, ORDINE_MAT, ALIAJE_SPEC
 from . import conturi as conturi_mod
 from .stiluri import STIL_BUTON_PRINCIPAL, STIL_BUTON_SECUNDAR, STIL_BUTON_PERICOL, STIL_CAMP, CULOARE_EROARE, CULOARE_SUCCES, CULOARE_GRI_TEXT, CULOARE_BORDURA, CULOARE_FUNDAL_SECTIUNE
 from .utils import fmt, to_float, r2
@@ -667,9 +667,11 @@ class DialogCapacitateReteta(QDialog):
             rezumat = (
                 f"<b>Incap {desf['bareIntregi']} bare intregi</b> din cele "
                 f"{desf['nrBareCerut']} cerute. Se termina: <b>{limitante}</b>.<br>"
-                f"Bara {desf['baraReport']['index']} ia tot ce mai ramane din loturile "
-                f"curente si trece cu diferenta pe o reteta noua; dupa ea mai raman "
-                f"{desf['bareRamase'] - 1} bare de turnat acolo."
+                f"Bara {desf['baraReport']['index']} ia tot ce mai ramane din lotul care "
+                f"s-a terminat si trece pe reteta urmatoare CU DOZAREA DE AICI; acolo "
+                f"isi completeaza diferenta si consuma integral celelalte materiale. "
+                f"Dupa ea mai raman {desf['bareRamase'] - 1} bare de turnat acolo, "
+                f"dozate pe loturile noi."
             )
             culoare = CULOARE_EROARE
         else:
@@ -686,8 +688,9 @@ class DialogCapacitateReteta(QDialog):
 
         if any(desf["reportMostenit"].get(k, 0) > 0 for k in ORDINE_MAT):
             et_rep = QLabel(
-                "Reteta contine o bara de report din reteta anterioara \u2014 "
-                "consumul ei se scade primul din loturile de aici."
+                "Reteta contine o bara de report din reteta anterioara, cu dozarea "
+                "ei veche \u2014 consumul ei se scade primul din loturile de aici, "
+                "inaintea barelor dozate pe loturile de aici."
             )
             et_rep.setWordWrap(True)
             et_rep.setStyleSheet(f"color: {CULOARE_GRI_TEXT}; font-size: 11px;")
@@ -716,7 +719,8 @@ class DialogCapacitateReteta(QDialog):
                 m = pas["materiale"].get(k, {})
                 if m.get("dinLotNou", 0) > 0:
                     it_consum = QTableWidgetItem(
-                        f"{fmt(m.get('dinLotCurent'), 2)} + {fmt(m.get('dinLotNou'), 2)} din lot nou"
+                        f"{fmt(m.get('dinLotCurent'), 2)} + {fmt(m.get('dinLotNou'), 2)} "
+                        "din reteta urmatoare"
                     )
                     it_consum.setForeground(QColor(CULOARE_EROARE))
                 else:
@@ -767,3 +771,360 @@ class DialogCapacitateReteta(QDialog):
     def _aplica(self):
         self.actiune = "aplica"
         self.accept()
+
+
+# Elementele de compozitie tinta afisate in configurarea comenzii, in
+# functie de ce limite are aliajul in config.ALIAJE_SPEC.
+_ELEMENTE_TINTA = [
+    ("al", "Al [%]"), ("v", "V [%]"), ("mo", "Mo [%]"), ("zr", "Zr [%]"),
+    ("si", "Si [%]"), ("o", "O [%]"), ("fe", "Fe [%]"),
+]
+
+
+def _elemente_pentru_aliaj(tip_aliaj):
+    """Ce campuri de compozitie tinta au sens pentru aliajul dat: cele
+    care apar in limitele lui chimice, plus O si Fe (mereu prezente)."""
+    spec = ALIAJE_SPEC.get(tip_aliaj, {})
+    elemente = []
+    for cheie, eticheta in _ELEMENTE_TINTA:
+        if cheie in ("o", "fe") or f"{cheie}_min" in spec or f"{cheie}_max" in spec:
+            elemente.append((cheie, eticheta))
+    return elemente
+
+
+class DialogConfigurareComanda(QDialog):
+    """Configurarea completa a unei comenzi, dintr-un singur loc: portia,
+    numarul de presari, numarul total de bare, compozitia tinta si —
+    partea noua — LISTA ORDONATA DE LOTURI alocate comenzii, pe material.
+
+    Din listele astea programul genereaza singur retetele: toarna bare din
+    loturile de pe primul rand pana cand unul se termina, apoi intra
+    automat in urmatorul lot din lista aceluiasi material si deschide o
+    reteta noua. Utilizatorul nu mai creeaza retete de mana si nu mai
+    alege loturi pe fiecare reteta in parte.
+
+    La OK, self.rezultat contine:
+        {"portie", "numarPresari", "nrBare", "target", "loturiAlocate"}
+    """
+
+    def __init__(self, order, lots, parent=None, poate_edita=True):
+        super().__init__(parent)
+        self.setWindowTitle(f"Configurare comanda \u2014 {order.get('nume', '')}")
+        self.resize(860, 720)
+        self.rezultat = None
+        self.poate_edita = poate_edita
+        self.lots = lots
+        self.tip_aliaj = order.get("tipAliaj", "")
+
+        prima = (order.get("retete") or [{}])[0]
+        target = order.get("target") or prima.get("target") or {}
+        alocate = order.get("loturiAlocate") or {}
+
+        radacina = QVBoxLayout(self)
+
+        intro = QLabel(
+            "Pune aici, pe fiecare material, <b>loturile in ordinea in care intra "
+            "in comanda</b>. Programul toarna barele din primul lot; cand unul se "
+            "termina, bara care nu mai incape trece pe reteta urmatoare cu dozarea "
+            "veche, iar materialul epuizat continua automat cu urmatorul lot din "
+            "lista. Retetele se scriu singure."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet(f"color: {CULOARE_GRI_TEXT}; font-size: 11px;")
+        radacina.addWidget(intro)
+
+        # --- Datele de sarja -------------------------------------------
+        grila = QGridLayout()
+        self.camp_portie = QLineEdit(str(order.get("portie") or prima.get("portie") or ""))
+        self.camp_presari = QLineEdit(str(order.get("numarPresari") or prima.get("numarPresari") or "1"))
+        self.camp_bare = QLineEdit(str(order.get("nrBare") or ""))
+        for col, (eticheta, camp, latime) in enumerate((
+            ("Portie [kg]", self.camp_portie, 90),
+            ("Numar de presari", self.camp_presari, 90),
+            ("Numar total de bare", self.camp_bare, 90),
+        )):
+            et = QLabel(eticheta)
+            et.setStyleSheet(f"color: {CULOARE_GRI_TEXT}; font-size: 11px;")
+            grila.addWidget(et, 0, col)
+            camp.setStyleSheet(STIL_CAMP)
+            camp.setFixedWidth(latime)
+            camp.setReadOnly(not poate_edita)
+            grila.addWidget(camp, 1, col)
+        radacina.addLayout(grila)
+
+        # --- Compozitia tinta ------------------------------------------
+        et_tinta = QLabel("Compozitie tinta in bara")
+        et_tinta.setStyleSheet("font-weight: 600; font-size: 11px;")
+        radacina.addWidget(et_tinta)
+
+        grila_tinta = QGridLayout()
+        self.campuri_tinta = {}
+        for col, (cheie, eticheta) in enumerate(_elemente_pentru_aliaj(self.tip_aliaj)):
+            et = QLabel(eticheta)
+            et.setStyleSheet(f"color: {CULOARE_GRI_TEXT}; font-size: 11px;")
+            grila_tinta.addWidget(et, 0, col)
+            camp = QLineEdit(str(target.get(cheie, "")))
+            camp.setStyleSheet(STIL_CAMP)
+            camp.setFixedWidth(80)
+            camp.setReadOnly(not poate_edita)
+            grila_tinta.addWidget(camp, 1, col)
+            self.campuri_tinta[cheie] = camp
+        radacina.addLayout(grila_tinta)
+
+        # --- Cozile de loturi, pe material -----------------------------
+        et_loturi = QLabel("Loturi alocate comenzii (in ordinea folosirii)")
+        et_loturi.setStyleSheet("font-weight: 600; font-size: 11px;")
+        radacina.addWidget(et_loturi)
+
+        zona = QScrollArea()
+        zona.setWidgetResizable(True)
+        zona.setStyleSheet("QScrollArea { border: none; }")
+        interior = QWidget()
+        layout_interior = QVBoxLayout(interior)
+        layout_interior.setSpacing(8)
+
+        self.liste = {}
+        for mat in MATERIALE:
+            mid = mat["id"]
+            disponibile = [l for l in lots if l.get("material") == mid]
+            if not disponibile and not alocate.get(mid):
+                continue    # material fara niciun lot in stoc: nu-l aratam
+
+            cadru = QWidget()
+            rand = QHBoxLayout(cadru)
+            rand.setContentsMargins(0, 0, 0, 0)
+
+            et = QLabel(mat["nume"])
+            et.setFixedWidth(130)
+            et.setStyleSheet("font-size: 11px;")
+            rand.addWidget(et)
+
+            lista = QListWidget()
+            lista.setFixedHeight(74)
+            lista.setStyleSheet(f"QListWidget {{ border: 1px solid {CULOARE_BORDURA}; "
+                                "border-radius: 5px; font-size: 11px; }")
+            for lot_id in alocate.get(mid) or []:
+                lot = next((l for l in lots if l["id"] == lot_id), None)
+                if lot:
+                    lista.addItem(self._eticheta_lot(lot))
+                    lista.item(lista.count() - 1).setData(Qt.UserRole, lot_id)
+            rand.addWidget(lista, 1)
+
+            combo = QComboBox()
+            combo.setStyleSheet(STIL_CAMP)
+            combo.setFixedWidth(220)
+            for lot in disponibile:
+                combo.addItem(self._eticheta_lot(lot), lot["id"])
+            rand.addWidget(combo)
+
+            coloana_btn = QVBoxLayout()
+            coloana_btn.setSpacing(3)
+            for text, tooltip, functie in (
+                ("+", "Adauga lotul ales la sfarsitul listei",
+                 lambda _, m=mid: self._adauga(m)),
+                ("\u2191", "Mut lotul selectat mai sus (se foloseste mai devreme)",
+                 lambda _, m=mid: self._muta(m, -1)),
+                ("\u2193", "Mut lotul selectat mai jos",
+                 lambda _, m=mid: self._muta(m, 1)),
+                ("\u2715", "Scot lotul selectat din lista",
+                 lambda _, m=mid: self._sterge(m)),
+            ):
+                btn = QPushButton(text)
+                btn.setFixedWidth(30)
+                btn.setStyleSheet(STIL_BUTON_PERICOL if text == "\u2715" else STIL_BUTON_SECUNDAR)
+                btn.setToolTip(tooltip)
+                btn.clicked.connect(functie)
+                btn.setEnabled(poate_edita)
+                coloana_btn.addWidget(btn)
+            rand.addLayout(coloana_btn)
+
+            layout_interior.addWidget(cadru)
+            self.liste[mid] = {"lista": lista, "combo": combo}
+
+        layout_interior.addStretch(1)
+        zona.setWidget(interior)
+        radacina.addWidget(zona, 1)
+
+        # --- Butoane ----------------------------------------------------
+        rand_btn = QHBoxLayout()
+        btn_renunta = QPushButton("Renunta")
+        btn_renunta.setStyleSheet(STIL_BUTON_SECUNDAR)
+        btn_renunta.clicked.connect(self.reject)
+        rand_btn.addWidget(btn_renunta)
+        rand_btn.addStretch(1)
+        if poate_edita:
+            btn_ok = QPushButton("Salveaza si genereaza retetele")
+            btn_ok.setStyleSheet(STIL_BUTON_PRINCIPAL)
+            btn_ok.setToolTip(
+                "Salveaza configurarea si construieste automat toate retetele "
+                "comenzii din listele de loturi de mai sus."
+            )
+            btn_ok.clicked.connect(self._accepta)
+            rand_btn.addWidget(btn_ok)
+        radacina.addLayout(rand_btn)
+
+    # -- helpere ---------------------------------------------------------
+    @staticmethod
+    def _eticheta_lot(lot):
+        nume = lot.get("nrLot") or lot.get("lot") or lot.get("id")
+        return f"{nume}  \u2014  rest {fmt(lot_rest(lot), 2)} kg"
+
+    def _lot_ales(self, mid):
+        combo = self.liste[mid]["combo"]
+        return combo.currentData()
+
+    def _adauga(self, mid):
+        lot_id = self._lot_ales(mid)
+        if not lot_id:
+            return
+        lista = self.liste[mid]["lista"]
+        existente = [lista.item(i).data(Qt.UserRole) for i in range(lista.count())]
+        if lot_id in existente:
+            QMessageBox.information(self, "Lot deja in lista",
+                                    "Lotul ales e deja in lista acestui material.")
+            return
+        lot = next((l for l in self.lots if l["id"] == lot_id), None)
+        if lot is None:
+            return
+        lista.addItem(self._eticheta_lot(lot))
+        lista.item(lista.count() - 1).setData(Qt.UserRole, lot_id)
+
+    def _muta(self, mid, directie):
+        lista = self.liste[mid]["lista"]
+        i = lista.currentRow()
+        j = i + directie
+        if i < 0 or j < 0 or j >= lista.count():
+            return
+        item = lista.takeItem(i)
+        lista.insertItem(j, item)
+        lista.setCurrentRow(j)
+
+    def _sterge(self, mid):
+        lista = self.liste[mid]["lista"]
+        i = lista.currentRow()
+        if i >= 0:
+            lista.takeItem(i)
+
+    def _accepta(self):
+        nr_bare = int(to_float(self.camp_bare.text()))
+        if nr_bare <= 0:
+            QMessageBox.warning(self, "Numar de bare",
+                                "Scrie cate bare are comanda (numar intreg, mai mare ca 0).")
+            return
+        if to_float(self.camp_portie.text()) <= 0:
+            QMessageBox.warning(self, "Portie", "Scrie portia in kg (mai mare ca 0).")
+            return
+
+        alocate = {}
+        for mid, widgets in self.liste.items():
+            lista = widgets["lista"]
+            ids = [lista.item(i).data(Qt.UserRole) for i in range(lista.count())]
+            if ids:
+                alocate[mid] = ids
+        if not alocate:
+            QMessageBox.warning(
+                self, "Fara loturi",
+                "Adauga cel putin lotul de burete si loturile materialelor de aliere, "
+                "in ordinea in care intra in comanda."
+            )
+            return
+
+        self.rezultat = {
+            "portie": self.camp_portie.text().strip(),
+            "numarPresari": self.camp_presari.text().strip() or "1",
+            "nrBare": str(nr_bare),
+            "target": {k: to_float(c.text()) for k, c in self.campuri_tinta.items()},
+            "loturiAlocate": alocate,
+        }
+        self.accept()
+
+
+class DialogPreviewGenerare(QDialog):
+    """Previzualizarea planului generat automat din loturile comenzii,
+    inainte sa fie scris efectiv pe comanda.
+
+    Utilizatorul VALIDEAZA planul (\u201eConfirma si salveaza\u201d) sau renunta;
+    nimic nu se schimba pe comanda pana la confirmare. Daca in timpul
+    generarii s-a terminat lista de loturi a vreunui material, planul e
+    aratat oricum (partial \u2014 pana unde a ajuns) impreuna cu avertismentul,
+    si operatorul poate deschide direct configurarea ca sa adauge lotul
+    care lipseste.
+    """
+
+    def __init__(self, retete_noi, raport, pastrate, parent=None, poate_edita=True):
+        super().__init__(parent)
+        self.setWindowTitle("Verifica planul generat")
+        self.resize(620, 520)
+        self.actiune = None   # "confirma" | "configureaza" | None (renunta)
+
+        radacina = QVBoxLayout(self)
+
+        titlu = QLabel(
+            f"S-au generat <b>{len(retete_noi)}</b> retete noi, "
+            f"<b>{raport['barePlasate']}</b> bare plasate in total"
+            + (f", pastrand primele <b>{pastrate}</b> retete (consum deja aplicat)"
+               if pastrate else "") + "."
+        )
+        titlu.setWordWrap(True)
+        radacina.addWidget(titlu)
+
+        tabel = QTableWidget()
+        tabel.setColumnCount(4)
+        tabel.setHorizontalHeaderLabels(["Reteta", "Bare", "Tip bare", "Loturi folosite"])
+        tabel.setEditTriggers(QTableWidget.NoEditTriggers)
+        tabel.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        tabel.setRowCount(len(retete_noi))
+        for i, r in enumerate(retete_noi):
+            tipuri = [b.get("tipDozare") for b in r["bare"]]
+            nr_report = tipuri.count("report")
+            tip_text = (
+                (f"{nr_report} report + {len(r['bare']) - nr_report} noi" if nr_report
+                 else f"{len(r['bare'])} noi")
+            )
+            loturi_text = ", ".join(
+                f"{nume_material(mid)}: {lid}" for mid, lid in r["lotSel"].items()
+            )
+            tabel.setItem(i, 0, QTableWidgetItem(r["nume"]))
+            tabel.setItem(i, 1, QTableWidgetItem(str(len(r["bare"]))))
+            tabel.setItem(i, 2, QTableWidgetItem(tip_text))
+            tabel.setItem(i, 3, QTableWidgetItem(loturi_text))
+        radacina.addWidget(tabel, 1)
+
+        if raport["bareRamase"]:
+            avert = QLabel(
+                f"\u26a0 Mai raman <b>{raport['bareRamase']}</b> bare neplasate:"
+            )
+            avert.setStyleSheet(f"color: {CULOARE_EROARE};")
+            radacina.addWidget(avert)
+        for text in raport["avertismente"]:
+            et = QLabel("\u2022 " + text)
+            et.setWordWrap(True)
+            et.setStyleSheet(f"color: {CULOARE_EROARE}; font-size: 11px;")
+            radacina.addWidget(et)
+
+        rand_btn = QHBoxLayout()
+        btn_renunta = QPushButton("Renunta")
+        btn_renunta.setStyleSheet(STIL_BUTON_SECUNDAR)
+        btn_renunta.clicked.connect(self.reject)
+        rand_btn.addWidget(btn_renunta)
+        rand_btn.addStretch(1)
+        if raport["avertismente"] and poate_edita:
+            btn_config = QPushButton("Deschide configurarea si adauga lotul")
+            btn_config.setStyleSheet(STIL_BUTON_SECUNDAR)
+            btn_config.clicked.connect(self._configureaza)
+            rand_btn.addWidget(btn_config)
+        if poate_edita:
+            btn_ok = QPushButton("\u2713 Confirma si salveaza")
+            btn_ok.setStyleSheet(STIL_BUTON_PRINCIPAL)
+            btn_ok.setEnabled(len(retete_noi) > 0)
+            btn_ok.clicked.connect(self._confirma)
+            rand_btn.addWidget(btn_ok)
+        radacina.addLayout(rand_btn)
+
+    def _confirma(self):
+        self.actiune = "confirma"
+        self.accept()
+
+    def _configureaza(self):
+        self.actiune = "configureaza"
+        self.reject()
