@@ -24,6 +24,7 @@ from ..config import (
     MATERIALE, FISA_LIMITA_ETICHETE, ORDINE_AFISARE_MATERIALE, ALIAJE_SPEC,
     BENEFICIAR_IMPLICIT, SEF_SECTIE_LINGOURI, INTOCMIT_NUME, COD_FORMULAR_FISA_LIMITA,
 )
+from ..standarde import spec_efectiv
 from ..utils import to_float, fmt, numar_comanda
 from .logo import adauga_logo_xlsx, logo_flowable_pdf
 
@@ -172,7 +173,7 @@ def genereaza_fisa_limita_xlsx(order, consum, cale_iesire, intocmit_nume=None):
     italic_bold = Font(bold=True, italic=True)
     centru = Alignment(horizontal="center")
 
-    spec = ALIAJE_SPEC.get(order.get("tipAliaj"), {})
+    spec = spec_efectiv(order)
     numar = numar_comanda(order)
 
     # --- Antet: data (dreapta-sus), apoi Comanda / Beneficiar / Grad / -
@@ -281,7 +282,7 @@ def genereaza_fisa_limita_pdf(order, consum, cale_iesire, intocmit_nume=None):
     stil_antet = ParagraphStyle("AntetFisaLimita", parent=stiluri["Normal"], fontName="Helvetica-Bold", spaceAfter=2)
     stil_titlu = ParagraphStyle("TitluFisaLimita", parent=stiluri["Heading2"], alignment=TA_CENTER)
 
-    spec = ALIAJE_SPEC.get(order.get("tipAliaj"), {})
+    spec = spec_efectiv(order)
     numar = numar_comanda(order)
 
     logo_cell = logo_flowable_pdf(latime_cm=3.6) or Paragraph("ZIROM TITANIUM", stil_logo)

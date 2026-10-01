@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+from . import standarde
 from .config import MATERIALE, ORDINE_MAT, ALIAJE_SPEC
 from . import conturi as conturi_mod
 from .stiluri import STIL_BUTON_PRINCIPAL, STIL_BUTON_SECUNDAR, STIL_BUTON_PERICOL, STIL_CAMP, CULOARE_EROARE, CULOARE_SUCCES, CULOARE_GRI_TEXT, CULOARE_BORDURA, CULOARE_FUNDAL_SECTIUNE
@@ -413,6 +414,7 @@ class DialogLotNou(QDialog):
         ("dozaN", "Doza N (%)"), ("dozaV", "Doza V (%)"),
         ("dozaAl", "Doza Al (%)"), ("dozaSi", "Doza Si (%)"),
         ("dozaMo", "Doza Mo (%)"), ("dozaZr", "Doza Zr (%)"),
+        ("dozaSn", "Doza Sn (%)"),
     ]
 
     def __init__(self, material_nume, parent=None, lot=None, orders=None):
@@ -776,18 +778,21 @@ class DialogCapacitateReteta(QDialog):
 # Elementele de compozitie tinta afisate in configurarea comenzii, in
 # functie de ce limite are aliajul in config.ALIAJE_SPEC.
 _ELEMENTE_TINTA = [
-    ("al", "Al [%]"), ("v", "V [%]"), ("mo", "Mo [%]"), ("zr", "Zr [%]"),
+    ("al", "Al [%]"), ("v", "V [%]"), ("mo", "Mo [%]"), ("sn", "Sn [%]"), ("zr", "Zr [%]"),
     ("si", "Si [%]"), ("o", "O [%]"), ("fe", "Fe [%]"),
 ]
 
 
-def _elemente_pentru_aliaj(tip_aliaj):
+def _elemente_pentru_aliaj(tip_aliaj, standard=None):
     """Ce campuri de compozitie tinta au sens pentru aliajul dat: cele
-    care apar in limitele lui chimice, plus O si Fe (mereu prezente)."""
+    care apar in limitele lui chimice (din config sau din standardul ales
+    pe comanda), plus O si Fe (mereu prezente)."""
     spec = ALIAJE_SPEC.get(tip_aliaj, {})
+    din_standard = {e.lower() for e in (standard or {}).get("limite", {})}
     elemente = []
     for cheie, eticheta in _ELEMENTE_TINTA:
-        if cheie in ("o", "fe") or f"{cheie}_min" in spec or f"{cheie}_max" in spec:
+        if (cheie in ("o", "fe") or f"{cheie}_min" in spec or f"{cheie}_max" in spec
+                or cheie in din_standard):
             elemente.append((cheie, eticheta))
     return elemente
 
@@ -815,6 +820,7 @@ class DialogConfigurareComanda(QDialog):
         self.poate_edita = poate_edita
         self.lots = lots
         self.tip_aliaj = order.get("tipAliaj", "")
+        self.standard = standarde.standard_ales(order)
 
         prima = (order.get("retete") or [{}])[0]
         target = order.get("target") or prima.get("target") or {}
@@ -859,7 +865,7 @@ class DialogConfigurareComanda(QDialog):
 
         grila_tinta = QGridLayout()
         self.campuri_tinta = {}
-        for col, (cheie, eticheta) in enumerate(_elemente_pentru_aliaj(self.tip_aliaj)):
+        for col, (cheie, eticheta) in enumerate(_elemente_pentru_aliaj(self.tip_aliaj, self.standard)):
             et = QLabel(eticheta)
             et.setStyleSheet(f"color: {CULOARE_GRI_TEXT}; font-size: 11px;")
             grila_tinta.addWidget(et, 0, col)
@@ -1029,11 +1035,24 @@ class DialogConfigurareComanda(QDialog):
             )
             return
 
+        target = {k: to_float(c.text()) for k, c in self.campuri_tinta.items()}
+        incalcari = standarde.verifica_limite(self.standard, target)
+        if incalcari:
+            raspuns = QMessageBox.question(
+                self, "Tinta iese din standard",
+                "Compozitia tinta nu se incadreaza in standardul comenzii:\n\n"
+                + "\n".join("\u2022 " + i["text"] for i in incalcari)
+                + "\n\nSalvezi oricum?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if raspuns != QMessageBox.Yes:
+                return
+
         self.rezultat = {
             "portie": self.camp_portie.text().strip(),
             "numarPresari": self.camp_presari.text().strip() or "1",
             "nrBare": str(nr_bare),
-            "target": {k: to_float(c.text()) for k, c in self.campuri_tinta.items()},
+            "target": target,
             "loturiAlocate": alocate,
         }
         self.accept()

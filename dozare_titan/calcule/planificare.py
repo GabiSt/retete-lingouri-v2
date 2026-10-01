@@ -30,7 +30,7 @@ Exemplu real (Cda 26858-Ti5, 12 bare, 900 kg/bara):
 from ..config import ORDINE_MAT
 from ..utils import to_float, r2, uid
 from .capacitate import desfasoara_reteta, nume_material, TOLERANTA_KG
-from .comun import lot_rest, material_necesar
+from .comun import lot_rest, material_necesar, material_lot_lipsa
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +317,17 @@ def aplica_consum_reteta(order, r, lots, calculeaza_bara, tip_aliaj):
         return False, eroare
 
     neaplicate = [b for b in r["bare"] if not b.get("consumApplied")]
-    if not neaplicate:
+    # O reteta poate fi FARA nicio bara a ei (tot ce a putut da s-a dus pe
+    # bara de report cedata retetei urmatoare — lotul era prea mic pentru
+    # macar o bara intreaga, ex. un rest mic de burete). O astfel de reteta
+    # tot are consum real de aplicat (restul lotului mic, creditat barei de
+    # report de la reteta urmatoare), deci NU e cazul "nimic de aplicat"
+    # decat daca nici cedarea aia nu mai e in asteptare.
+    _, bara_cedata_verif = bara_report_trimisa(order, r)
+    cedare_in_asteptare = (
+        bara_cedata_verif is not None and not bara_cedata_verif.get("consumApplied")
+    )
+    if not neaplicate and not cedare_in_asteptare:
         return False, "Toate barele acestei retete au deja consum aplicat."
 
     # --- 1. Scaderea efectiva din loturile curente ---------------------
@@ -329,7 +339,7 @@ def aplica_consum_reteta(order, r, lots, calculeaza_bara, tip_aliaj):
         kg = r2(desf["consumTotalReteta"].get(k, 0.0))
         lot = lot_sel[k]
         if lot is None:
-            if kg > TOLERANTA_KG and material_necesar(k, r["target"]):
+            if kg > TOLERANTA_KG and material_necesar(k, r["target"], tip_aliaj):
                 return False, f"Lotul pentru {k} nu a fost selectat."
             continue
         if kg <= 1e-9:
@@ -686,7 +696,7 @@ def genereaza_retete(order, lots, calculeaza_bara, tip_aliaj):
                 idx[k] += 1
             lot_sel[k] = lots_by_id.get(cozi[k][idx[k]]) if idx[k] < len(cozi[k]) else None
 
-        lipsa = [k for k in ORDINE_MAT if lot_sel[k] is None and material_necesar(k, target)]
+        lipsa = [k for k in ORDINE_MAT if material_lot_lipsa(k, target, tip_aliaj, lot_sel)]
         if lipsa:
             avertismente.append(
                 "S-a terminat lista de loturi alocate pentru: "

@@ -31,11 +31,14 @@ calculeaza_bara() si nu trebuie modificat.
 
 from .generic import calculeaza_generic
 from . import specificatii as spec
+from . import ti6242
 from .comun import (  # noqa: F401  (re-exportate pentru comoditate)
     lot_ti,
     lot_rest,
     target_ti,
     material_necesar,
+    material_lot_lipsa,
+    grup_alternativ,
     ELEMENT_PER_MATERIAL,
     _componente_loturi,
     _rezumat_calcul,
@@ -82,6 +85,10 @@ DOZATOARE = {
     "Ti5": _dozator(spec.SPEC_TI6AL4V),
     "Ti -VT9": _dozator(spec.SPEC_VT9),
     "Ti6Al4V-AMS": _dozator(spec.SPEC_TI6AL4V_FARA_FE),
+    # Ti 6-2-4-2: formula scrisa direct in calcule/ti6242.py, dupa Excel-ul
+    # "Cda 24883-Ti6242" (burete + AlMo + Al metal + Zy4 + Sn metal + SiTi +
+    # TiO2). Cheia = numele din standarde.xlsx si din config.ALIAJE_SPEC.
+    "Ti 6-2-4-2": ti6242.calculeaza_dozare_kg,
 }
 
 
@@ -100,7 +107,7 @@ def calculeaza_bara(tip_aliaj, target, lot_sel, portie, nr_presari=1):
     Returneaza un dict cu rezultatul calculului, sau {"eroare": "..."}
     daca ceva nu a putut fi calculat.
     """
-    comps, eroare = _componente_loturi(lot_sel, target)
+    comps, eroare = _componente_loturi(lot_sel, target, tip_aliaj)
     if eroare:
         return {"eroare": eroare}
 
@@ -114,7 +121,11 @@ def calculeaza_bara(tip_aliaj, target, lot_sel, portie, nr_presari=1):
 
     functie_dozare = DOZATOARE.get(tip_aliaj)
     if functie_dozare is None:
-        return {"eroare": f"Nu exista o formula de dozare implementata pentru tipul de aliaj \u201e{tip_aliaj}\u201d."}
+        return {"eroare": (
+            f"Nu exista inca o reteta de dozare pentru aliajul \u201e{tip_aliaj}\u201d "
+            "(placeholder din standarde.xlsx: are standardele si limitele lui, dar "
+            "calculul de dozare nu e implementat)."
+        )}
 
     rezultat, eroare = functie_dozare(target, comps, p)
     if eroare:

@@ -32,8 +32,9 @@ from ..config import (
     MATERIAL_NUME_RETDOZARE, MATERIAL_ABREVIERE_BILANT, MATERIAL_ELEMENTE_RELEVANTE,
     SEF_SECTIE_LINGOURI, INTOCMIT_NUME, COD_FORMULAR_RETDOZARE,
 )
+from ..standarde import spec_efectiv
 from ..utils import to_float, fmt, numar_comanda, pct
-from ..calcule import calculeaza_bara, target_ti, material_necesar
+from ..calcule import calculeaza_bara, target_ti, material_necesar, grup_alternativ
 from ..calcule.comun import ELEMENT_PER_MATERIAL, lot_ti
 from ..persistenta import _numar_bare_anterioare
 from .logo import adauga_logo_xlsx, logo_flowable_pdf
@@ -49,13 +50,30 @@ def _element_principal(mat_id):
     return cheie.capitalize() if cheie else "Ti"
 
 
-def _materiale_active_ordonate(target):
+def _materiale_active_ordonate(target, tip_aliaj=None, lot_sel=None):
     """Materialele active ale unei retete, in ordinea de afisare a
     formularelor tiparite (ORDINE_AFISARE_MATERIALE, nu ordinea interna
-    ORDINE_MAT)."""
+    ORDINE_MAT).
+
+    Pentru un grup de materiale alternative (ex. Zr metal / Zy4 la
+    Ti 6-2-4-2), afiseaza DOAR materialul care are efectiv un lot
+    selectat (lot_sel), nu ambele — la fel ca in RetDozare-ul din Excel,
+    unde apare un singur rand pentru sursa de Zr chiar folosita.
+    """
+    def activ(mid):
+        if mid == "burete":
+            return True
+        if not material_necesar(mid, target, tip_aliaj):
+            return False
+        grup = grup_alternativ(mid, tip_aliaj)
+        if grup and lot_sel is not None:
+            selectate = [m for m in grup if lot_sel.get(m)]
+            if selectate:
+                return mid in selectate
+        return True
     return [
         _MATERIALE_PRIN_ID[mid] for mid in ORDINE_AFISARE_MATERIALE
-        if mid in _MATERIALE_PRIN_ID and (mid == "burete" or material_necesar(mid, target))
+        if mid in _MATERIALE_PRIN_ID and activ(mid)
     ]
 
 
@@ -109,8 +127,8 @@ def construieste_date_retdozare_comanda(order, lots):
 
     rezultate = []
     for r in order.get("retete", []):
-        materiale_active = _materiale_active_ordonate(r["target"])
         lot_sel = {k: next((l for l in lots if l["id"] == r["lotSel"].get(k)), None) for k in ORDINE_MAT}
+        materiale_active = _materiale_active_ordonate(r["target"], tip_aliaj, lot_sel)
 
         # Lotul "in uz" pentru afisare (Loturi si compozitie initiala +
         # Bilant presare al barelor deja produse): porneste de la selectia
@@ -148,6 +166,7 @@ def construieste_date_retdozare_comanda(order, lots):
                 "Mo": to_float(lot.get("dozaMo")),
                 "Si": to_float(lot.get("dozaSi")),
                 "Zr": to_float(lot.get("dozaZr")),
+                "Sn": to_float(lot.get("dozaSn")),
             }
 
         # Lotul "curent" pe masura ce parcurgem istoricul barelor produse —
@@ -251,7 +270,7 @@ def genereaza_retdozare_xlsx(order, lots, cale_iesire, intocmit_nume=None):
 
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
-    spec = ALIAJE_SPEC.get(order.get("tipAliaj"), {})
+    spec = spec_efectiv(order)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "RetDozare"
@@ -438,7 +457,7 @@ def _scrie_bloc_retdozare_xlsx(ws, start_row, order, r, date_ret, spec, st, into
         cc.font = st["italic_bold"]
         cc.border = st["subtire"]
     rand += 1
-    elemente_ordine = ["Ti", "Al", "V", "O", "Fe", "Mo", "Si", "Zr"]
+    elemente_ordine = ["Ti", "Al", "V", "O", "Fe", "Mo", "Si", "Zr", "Sn"]
     elemente_relevante = {
         e for mat in materiale for e in MATERIAL_ELEMENTE_RELEVANTE.get(mat["id"], [])
     }
@@ -458,7 +477,7 @@ def _scrie_bloc_retdozare_xlsx(ws, start_row, order, r, date_ret, spec, st, into
     rand += 1
 
     # --- "Concentratii tinta in bara [%]" -------------------------------
-    ordine_elem_conc = [("v", "V"), ("al", "Al"), ("o", "O"), ("fe", "Fe"), ("mo", "Mo"), ("si", "Si"), ("zr", "Zr")]
+    ordine_elem_conc = [("v", "V"), ("al", "Al"), ("o", "O"), ("fe", "Fe"), ("mo", "Mo"), ("si", "Si"), ("zr", "Zr"), ("sn", "Sn")]
     elem_conc = [(cheie, eticheta) for cheie, eticheta in ordine_elem_conc if abs(to_float(r["target"].get(cheie))) > 1e-9]
     c = ws.cell(row=rand, column=1, value="Concentratii")
     c.font = st["italic_bold"]
@@ -549,7 +568,7 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire, intocmit_nume=None):
         )
     intocmit_nume = intocmit_nume or INTOCMIT_NUME
 
-    spec = ALIAJE_SPEC.get(order.get("tipAliaj"), {})
+    spec = spec_efectiv(order)
     doc = SimpleDocTemplate(
         cale_iesire, pagesize=A4,  # PORTRET, ca sablonul original tiparit
         leftMargin=1.3 * cm, rightMargin=1.3 * cm,
@@ -698,7 +717,7 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire, intocmit_nume=None):
 
         # --- "Initial" (compozitie pe material) -----------------------
         elemente.append(Paragraph("Initial \u2014 compozitie pe material", stil_sectiune))
-        elemente_ordine = ["Ti", "Al", "V", "O", "Fe", "Mo", "Si", "Zr"]
+        elemente_ordine = ["Ti", "Al", "V", "O", "Fe", "Mo", "Si", "Zr", "Sn"]
         elemente_relevante = {e for mat in materiale for e in MATERIAL_ELEMENTE_RELEVANTE.get(mat["id"], [])}
         date_initial = [["Initial"] + nume_mat_lung]
         for elem in elemente_ordine:
@@ -723,7 +742,7 @@ def genereaza_retdozare_pdf(order, lots, cale_iesire, intocmit_nume=None):
 
         # --- "Concentratii tinta in bara" -------------------------------
         elemente.append(Paragraph("Concentratii tinta in bara [%]", stil_sectiune))
-        ordine_elem_conc = [("v", "V"), ("al", "Al"), ("o", "O"), ("fe", "Fe"), ("mo", "Mo"), ("si", "Si"), ("zr", "Zr")]
+        ordine_elem_conc = [("v", "V"), ("al", "Al"), ("o", "O"), ("fe", "Fe"), ("mo", "Mo"), ("si", "Si"), ("zr", "Zr"), ("sn", "Sn")]
         elem_conc = [(cheie, eticheta) for cheie, eticheta in ordine_elem_conc if abs(to_float(r["target"].get(cheie))) > 1e-9]
         tabel_conc = Table([
             ["Concentratii", "Ti"] + [eticheta for _, eticheta in elem_conc],

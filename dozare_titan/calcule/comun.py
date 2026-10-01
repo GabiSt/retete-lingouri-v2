@@ -8,7 +8,7 @@ functiile de aici (in special lot_ti/target_ti, care presupun ca Ti e
 si sa le folosesti direct de acolo, fara sa modifici acest fisier.
 """
 
-from ..config import ORDINE_MAT
+from ..config import ORDINE_MAT, MATERIALE_PE_ALIAJ, GRUPE_ALTERNATIVE_PE_ALIAJ
 from ..utils import to_float, r2
 
 
@@ -36,7 +36,8 @@ def lot_ti(lot):
             to_float(lot.get("dozaAl")) + to_float(lot.get("dozaV")) +
             to_float(lot.get("dozaO")) + to_float(lot.get("dozaFe")) +
             to_float(lot.get("dozaN")) + to_float(lot.get("dozaMo")) +
-            to_float(lot.get("dozaSi")) + to_float(lot.get("dozaZr"))
+            to_float(lot.get("dozaSi")) + to_float(lot.get("dozaZr")) +
+            to_float(lot.get("dozaSn"))
         )
 
     # TiO2: are ~60% Ti (40% O)
@@ -44,7 +45,8 @@ def lot_ti(lot):
         return 60.0
 
     # Aliaj AlV / AlMo, Al metal, Fe metal, Zr metal: nu contin Ti
-    elif material in ("aliajAlV", "aliajAlMo", "alMetal", "feMetal", "zrMetal"):
+    elif material in ("aliajAlV", "aliajAlMo", "alMetal", "feMetal", "zrMetal",
+                      "zy4", "snMetal"):
         return 0.0
 
     # Default
@@ -60,7 +62,8 @@ def target_ti(target):
         to_float(target.get("al")) + to_float(target.get("v")) +
         to_float(target.get("o")) + to_float(target.get("fe")) +
         to_float(target.get("n", 0)) + to_float(target.get("mo")) +
-        to_float(target.get("si")) + to_float(target.get("zr"))
+        to_float(target.get("si")) + to_float(target.get("zr")) +
+        to_float(target.get("sn"))
     )
 
 
@@ -75,23 +78,62 @@ ELEMENT_PER_MATERIAL = {
     "aliajAlMo": "mo",
     "aliajSiTi": "si",
     "zrMetal": "zr",
+    "zy4": "zr",
+    "snMetal": "sn",
 }
 
 
-def material_necesar(mat_id, target):
+def material_necesar(mat_id, target, tip_aliaj=None):
     """True daca materialul chiar trebuie sa aiba un lot selectat.
 
     Burete de titan e mereu necesar (e incarcatura de baza a retetei);
     celelalte materiale sunt necesare doar daca tinta elementului lor
-    asociat e diferita de 0%.
+    asociat e diferita de 0% SI (cand se da tip_aliaj) materialul face
+    parte din reteta acelui aliaj (config.MATERIALE_PE_ALIAJ) — de ex.
+    la Ti 6-2-4-2 Zr vine din Zy4, nu din Zr metal.
     """
+    if tip_aliaj in MATERIALE_PE_ALIAJ:
+        if mat_id not in MATERIALE_PE_ALIAJ[tip_aliaj]:
+            return False
+    elif mat_id in ("zy4", "snMetal"):
+        # aliaj necunoscut: Zy4 / Sn metal se cer doar la Ti 6-2-4-2
+        return False
     elem = ELEMENT_PER_MATERIAL.get(mat_id)
     if elem is None:
         return True
     return abs(to_float(target.get(elem))) > 1e-9
 
 
-def _componente_loturi(lot_sel, target):
+def grup_alternativ(mat_id, tip_aliaj=None):
+    """Grupul de materiale alternative din care face parte mat_id, pentru
+    aliajul dat (vezi config.GRUPE_ALTERNATIVE_PE_ALIAJ) — de ex. la
+    Ti 6-2-4-2, ("zrMetal", "zy4"). None daca materialul nu apartine
+    niciunui grup alternativ pentru acest aliaj.
+    """
+    for grup in GRUPE_ALTERNATIVE_PE_ALIAJ.get(tip_aliaj, ()):
+        if mat_id in grup:
+            return grup
+    return None
+
+
+def material_lot_lipsa(mat_id, target, tip_aliaj, lot_sel):
+    """True daca materialului mat_id chiar ii lipseste un lot: e necesar
+    (material_necesar) SI nu are lot in lot_sel SI (daca apartine unui
+    grup alternativ, ex. Zr metal / Zy4) niciun alt membru al grupului nu
+    are deja lot selectat. lot_sel poate fi {material: lot_id} sau
+    {material: lot-obiect}; doar prezenta (truthy) conteaza aici.
+    """
+    if not material_necesar(mat_id, target, tip_aliaj):
+        return False
+    if lot_sel.get(mat_id):
+        return False
+    grup = grup_alternativ(mat_id, tip_aliaj)
+    if grup and any(lot_sel.get(alt) for alt in grup if alt != mat_id):
+        return False
+    return True
+
+
+def _componente_loturi(lot_sel, target, tip_aliaj=None):
     """Extrage compozitia (%) fiecarui lot selectat, indexata dupa material.
 
     Materialele care nu sunt necesare (tinta elementului asociat = 0%) nu
@@ -102,11 +144,11 @@ def _componente_loturi(lot_sel, target):
     for k in ORDINE_MAT:
         l = lot_sel.get(k)
         if not l:
-            if material_necesar(k, target):
+            if material_lot_lipsa(k, target, tip_aliaj, lot_sel):
                 return None, f"Selecteaza un lot pentru {k}."
             comps[k] = {
                 "Al": 0.0, "V": 0.0, "O": 0.0, "Fe": 0.0, "Ti": 0.0,
-                "Mo": 0.0, "Si": 0.0, "Zr": 0.0,
+                "Mo": 0.0, "Si": 0.0, "Zr": 0.0, "Sn": 0.0,
             }
             continue
         comps[k] = {
@@ -118,6 +160,7 @@ def _componente_loturi(lot_sel, target):
             "Mo": to_float(l.get("dozaMo")),
             "Si": to_float(l.get("dozaSi")),
             "Zr": to_float(l.get("dozaZr")),
+            "Sn": to_float(l.get("dozaSn")),
         }
     return comps, None
 
@@ -155,6 +198,7 @@ def _rezumat_calcul(target, comps, lot_sel, rezultat, p, n=1):
     mo_rezultat = 0
     si_rezultat = 0
     zr_rezultat = 0
+    sn_rezultat = 0
     for k in rezultat:
         ti_rezultat += rezultat[k] * comps[k]["Ti"] / 100
         al_rezultat += rezultat[k] * comps[k]["Al"] / 100
@@ -164,6 +208,7 @@ def _rezumat_calcul(target, comps, lot_sel, rezultat, p, n=1):
         mo_rezultat += rezultat[k] * comps[k]["Mo"] / 100
         si_rezultat += rezultat[k] * comps[k]["Si"] / 100
         zr_rezultat += rezultat[k] * comps[k]["Zr"] / 100
+        sn_rezultat += rezultat[k] * comps[k]["Sn"] / 100
 
     divizor = masa_totala if masa_totala > 1e-9 else 1
     return {
@@ -185,5 +230,6 @@ def _rezumat_calcul(target, comps, lot_sel, rezultat, p, n=1):
             "Mo": mo_rezultat / divizor * 100,
             "Si": si_rezultat / divizor * 100,
             "Zr": zr_rezultat / divizor * 100,
+            "Sn": sn_rezultat / divizor * 100,
         }
     }

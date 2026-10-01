@@ -25,9 +25,11 @@ from .stiluri import (
 )
 from .utils import uid, fmt, to_float, r2
 from .calcule import (
-    calculeaza_bara, lot_ti, lot_rest, target_ti, material_necesar,
+    calculeaza_bara, lot_ti, lot_rest, target_ti, material_necesar, material_lot_lipsa,
     desfasoara_reteta, nume_material, TOLERANTA_KG,
 )
+from . import standarde
+from .selector_standarde import SelectorStandarde
 from .calcule import planificare
 from .persistenta import incarca_date, salveaza_date, _numar_bare_anterioare
 from .dialoguri import (
@@ -350,6 +352,7 @@ class FereastraDozareTitan(QWidget):
 
     # ------------------------ TAB: COMENZI SI RETETE ------------------------
     def _rebuild_retete(self):
+        self._verifica_standarde_incarcate()
         # Migrare pentru comenzile vechi, salvate inainte ca barele sa fie
         # mutate la nivel de comanda: totalul se deduce din barele deja
         # existente pe retete, ca sa nu se piarda nimic.
@@ -470,9 +473,19 @@ class FereastraDozareTitan(QWidget):
 
     def _seteaza_tip_aliaj(self, order_id, tip_aliaj):
         order = self._gaseste_comanda(order_id)
-        if order.get("tipAliaj") == tip_aliaj:
+        if not tip_aliaj or order.get("tipAliaj") == tip_aliaj:
             return
         order["tipAliaj"] = tip_aliaj
+        # Standardele alese raman doar daca exista si la noul aliaj.
+        standarde.pastreaza_standarde_valide(order)
+        salveaza_date(self.state)
+        self._rebuild_retete()
+
+    def _seteaza_standarde(self, order_id, nume_standarde):
+        """Seteaza LISTA de standarde a comenzii (selectie multipla)."""
+        order = self._gaseste_comanda(order_id)
+        if not standarde.seteaza_standarde(order, nume_standarde):
+            return
         salveaza_date(self.state)
         self._rebuild_retete()
 
@@ -584,19 +597,45 @@ class FereastraDozareTitan(QWidget):
 
         combo_aliaj = QComboBox()
         combo_aliaj.setStyleSheet(STIL_CAMP)
-        combo_aliaj.setToolTip("Tipul de aliaj al comenzii \u2014 determina limitele chimice si formatul RetDozare folosite")
+        combo_aliaj.setToolTip(
+            "Tipul de aliaj al comenzii. Aliajele marcate (placeholder) apar in "
+            "standarde.xlsx, dar nu au inca reteta de dozare."
+        )
         tip_curent = order.get("tipAliaj", ALIAJ_IMPLICIT)
         index_sel = 0
-        for i, tip in enumerate(ALIAJE_DISPONIBILE):
-            combo_aliaj.addItem(tip)
-            if tip == tip_curent:
+        for i, item in enumerate(standarde.aliaje_disponibile()):
+            combo_aliaj.addItem(standarde.eticheta_aliaj(item), item["cheie"])
+            if item["cheie"] == tip_curent:
                 index_sel = i
         combo_aliaj.setCurrentIndex(index_sel)
-        combo_aliaj.currentTextChanged.connect(
-            lambda text, oid=order["id"]: self._seteaza_tip_aliaj(oid, text)
+        combo_aliaj.currentIndexChanged.connect(
+            lambda _i, oid=order["id"], cb=combo_aliaj: self._seteaza_tip_aliaj(oid, cb.currentData())
         )
         combo_aliaj.setEnabled(self.poate_edita)
         antet_layout.addWidget(combo_aliaj)
+
+        # Standardele comenzii (din standarde.xlsx) — se pot alege MAI MULTE
+        # (ex. AMS 4975 + AMS 4976); din ele se iau limitele chimice verificate
+        # pe retete si cele tiparite pe formulare (cea mai stricta din fiecare).
+        standarde_aliaj = standarde.standarde_pentru(tip_curent)
+        combo_standard = SelectorStandarde(
+            [s["nume"] for s in standarde_aliaj],
+            alese=standarde.nume_standarde_alese(order),
+            text_gol=("\u2014 alege standardele \u2014" if standarde_aliaj
+                      else "\u2014 fara standarde in Excel \u2014"),
+        )
+        combo_standard.setStyleSheet(STIL_CAMP)
+        std_curent = standarde.standard_ales(order)
+        combo_standard.setToolTip(
+            standarde.text_standard(std_curent) if std_curent else
+            "Standardele comenzii (poti bifa mai multe). Din ele se iau limitele chimice: "
+            "retetele care le depasesc primesc avertisment, iar formularele tiparite le folosesc."
+        )
+        combo_standard.schimbat.connect(
+            lambda nume, oid=order["id"]: self._seteaza_standarde(oid, nume)
+        )
+        combo_standard.setEnabled(self.poate_edita and bool(standarde_aliaj))
+        antet_layout.addWidget(combo_standard)
 
         camp_beneficiar = QLineEdit(order.get("beneficiar", BENEFICIAR_IMPLICIT))
         camp_beneficiar.setPlaceholderText("Beneficiar")
@@ -709,6 +748,12 @@ class FereastraDozareTitan(QWidget):
             corp_layout = QVBoxLayout(corp)
             corp_layout.setContentsMargins(14, 12, 14, 12)
             corp_layout.setSpacing(12)
+            if standarde.este_placeholder(order.get("tipAliaj", ALIAJ_IMPLICIT)):
+                corp_layout.addWidget(self._banner(
+                    f"Aliaj placeholder: \u201e{order.get('tipAliaj')}\u201d apare in standarde.xlsx, "
+                    "deci ii poti alege standardul si vezi limitele, dar nu are inca reteta de "
+                    "dozare \u2014 calculul, distribuirea barelor si RetDozare nu sunt disponibile.",
+                    "warn"))
             if automat:
                 corp_layout.addWidget(self._banner(
                     "Retetele de mai jos sunt construite automat din loturile comenzii "
@@ -843,7 +888,7 @@ class FereastraDozareTitan(QWidget):
         layout.addWidget(QLabel("Modifica valorile pentru a stabili compozitia dorita. Ti% se calculeaza automat ca rest."))
 
         rand_tinta = QHBoxLayout()
-        for camp, eticheta in [("al", "Al %"), ("v", "V %"), ("o", "O %"), ("fe", "Fe %") , ("mo", "Mo %"), ("si", "Si %"), ("zr", "Zr %")]:
+        for camp, eticheta in [("al", "Al %"), ("v", "V %"), ("o", "O %"), ("fe", "Fe %") , ("mo", "Mo %"), ("si", "Si %"), ("zr", "Zr %"), ("sn", "Sn %")]:
             bloc = QVBoxLayout()
             bloc.addWidget(self._eticheta_mica(eticheta))
             camp_edit = QLineEdit(str(r["target"].get(camp, 0)))
@@ -864,11 +909,13 @@ class FereastraDozareTitan(QWidget):
         bloc_ti.addWidget(camp_ti)
         rand_tinta.addLayout(bloc_ti)
         layout.addLayout(rand_tinta)
+        for banner in self._avertismente_standard(order, r):
+            layout.addWidget(banner)
 
         layout.addWidget(self._eticheta_eyebrow("Loturi folosite in amestec"))
         rand_loturi = QHBoxLayout()
         for mat in MATERIALE:
-            necesar = material_necesar(mat["id"], r["target"])
+            necesar = material_necesar(mat["id"], r["target"], order.get("tipAliaj", ALIAJ_IMPLICIT))
             bloc = QVBoxLayout()
             eticheta_mat = mat["nume"] if necesar else f"{mat['nume']} (neutilizat, tinta 0%)"
             eticheta_widget = self._eticheta_mica(eticheta_mat)
@@ -991,7 +1038,7 @@ class FereastraDozareTitan(QWidget):
 
         layout.addWidget(self._eticheta_eyebrow("Bilant reteta (suma tuturor barelor, cu presarile lor)"))
 
-        all_selected = all(r["lotSel"].get(k) for k in ORDINE_MAT if material_necesar(k, r["target"]))
+        all_selected = not any(material_lot_lipsa(k, r["target"], order.get("tipAliaj", ALIAJ_IMPLICIT), r["lotSel"]) for k in ORDINE_MAT)
         if not all_selected:
             layout.addWidget(self._banner("Selecteaza un lot pentru fiecare material necesar (cu tinta > 0%) ca sa vezi bilantul retetei.", "info"))
             return cadru
@@ -1114,7 +1161,7 @@ class FereastraDozareTitan(QWidget):
         self._rebuild_retete()
 
     def _construieste_rand_bara(self, order, r, bar, index):
-        all_selected = all(r["lotSel"].get(k) for k in ORDINE_MAT if material_necesar(k, r["target"]))
+        all_selected = not any(material_lot_lipsa(k, r["target"], order.get("tipAliaj", ALIAJ_IMPLICIT), r["lotSel"]) for k in ORDINE_MAT)
         tip_aliaj = order.get("tipAliaj", ALIAJ_IMPLICIT)
 
         cadru = QFrame()
@@ -1182,11 +1229,83 @@ class FereastraDozareTitan(QWidget):
 
         return cadru
 
+    # Elementele din reteta care pot fi comparate cu un standard (cele care
+    # au camp de tinta in interfata).
+    ELEMENTE_TINTA = ("al", "v", "o", "fe", "mo", "si", "zr", "sn")
+
+    def _avertismente_standard(self, order, r):
+        """Bannere despre incadrarea retetei in limitele standardului ales.
+
+        Compara compozitia TINTA a retetei cu limitele din standarde.xlsx
+        (interval sau maxim, dupa standard). Elementele fara limita in
+        standard si cele care nu se doza (C, N, H, Y ...) nu se verifica.
+        """
+        bannere = []
+        tip = order.get("tipAliaj", ALIAJ_IMPLICIT)
+        std = standarde.standard_ales(order)
+        if std is None:
+            if standarde.standarde_pentru(tip):
+                bannere.append(self._banner(
+                    "Alege standardul comenzii (langa aliaj) ca sa verific daca reteta "
+                    "se incadreaza in limitele lui.", "info"))
+            return bannere
+        if std["neaplicabil"] or std["fara_limite"]:
+            motiv = ("are N/A la toate elementele" if std["neaplicabil"]
+                     else "nu are limite chimice completate")
+            bannere.append(self._banner(
+                f"Standardul \u201e{std['nume']}\u201d {motiv} in Excel "
+                "\u2014 nu pot verifica reteta.", "info"))
+            return bannere
+        valori = {e: to_float(r["target"].get(e, 0)) for e in self.ELEMENTE_TINTA}
+        for incalcare in standarde.verifica_limite(std, valori):
+            bannere.append(self._banner(
+                "\u26a0 Tinta retetei iese din standard: " + incalcare["text"], "warn"))
+        return bannere
+
+    def _avertismente_compozitie_rezultata(self, order, calc, r):
+        """Ca mai sus, dar pe compozitia REZULTATA din calcul, doar pentru
+        elementele care nu au fost deja semnalate pe tinta."""
+        std = standarde.standard_ales(order)
+        if std is None or std["neaplicabil"] or std["fara_limite"]:
+            return []
+        deja = {i["element"] for i in standarde.verifica_limite(
+            std, {e: to_float(r["target"].get(e, 0)) for e in self.ELEMENTE_TINTA})}
+        comp = calc.get("compozitie_rezultata", {})
+        valori = {e: comp.get(e.capitalize()) for e in self.ELEMENTE_TINTA
+                  if e.capitalize() in comp}
+        return [
+            self._banner("\u26a0 Compozitia rezultata iese din standard: " + i["text"], "warn")
+            for i in standarde.verifica_limite(std, valori) if i["element"] not in deja
+        ]
+
+    def _verifica_standarde_incarcate(self):
+        """Anunta O SINGURA DATA (pentru fiecare versiune a fisierului) daca
+        standarde.xlsx lipseste, nu se poate citi sau are celule neintelese."""
+        cat = standarde.catalog()
+        semnatura = (cat["semnatura"], cat["eroare"], tuple(cat["avertismente"]))
+        if getattr(self, "_standarde_anuntate", None) == semnatura:
+            return
+        self._standarde_anuntate = semnatura
+        if cat["eroare"]:
+            QMessageBox.warning(
+                self, "Standarde indisponibile",
+                f"Nu am putut citi standardele: {cat['eroare']}.\n\n"
+                "Aplicatia merge mai departe fara ele (limitele chimice vechi raman valabile)."
+            )
+        elif cat["avertismente"]:
+            afisate = cat["avertismente"][:8]
+            mai_multe = len(cat["avertismente"]) - len(afisate)
+            QMessageBox.warning(
+                self, "Probleme in standarde.xlsx",
+                "\n\n".join(afisate) + (f"\n\n... si inca {mai_multe}." if mai_multe > 0 else "")
+            )
+
     def _banner(self, text, tip):
         culori = {
             "err": (CULOARE_EROARE, "#fbeceb"),
             "ok": (CULOARE_SUCCES, "#e5f5ec"),
             "info": (CULOARE_BLEUMARIN, "#eef2f8"),
+            "warn": (CULOARE_AVERTISMENT, "#fdf3e1"),
         }
         fg, bg = culori.get(tip, (CULOARE_GRI_TEXT, CULOARE_FUNDAL_SECTIUNE))
         l = QLabel(text)
@@ -1296,6 +1415,8 @@ class FereastraDozareTitan(QWidget):
             cell_layout.addWidget(tinta_label)
             comp_grid.addWidget(cell)
         layout.addLayout(comp_grid)
+        for banner in self._avertismente_compozitie_rezultata(order, calc, r):
+            layout.addWidget(banner)
 
         if calc["negativ"]:
             layout.addWidget(self._banner(
@@ -1338,7 +1459,7 @@ class FereastraDozareTitan(QWidget):
         for k in ORDINE_MAT:
             lot = lot_sel[k]
             if lot is None:
-                if material_necesar(k, r["target"]):
+                if material_lot_lipsa(k, r["target"], order.get("tipAliaj", ALIAJ_IMPLICIT), r["lotSel"]):
                     QMessageBox.warning(self, "Eroare", f"Lotul pentru {k} nu a fost selectat.")
                     return
                 snapshot[k] = []
@@ -1588,7 +1709,12 @@ class FereastraDozareTitan(QWidget):
     def _capacitate_reteta(self, order_id, recipe_id):
         order = self._gaseste_comanda(order_id)
         r = self._gaseste_reteta(order_id, recipe_id)
-        if not r["bare"]:
+        # O reteta fara nicio bara a ei poate totusi avea de cedat restul
+        # unui lot prea mic retetei urmatoare (vezi aplica_consum_reteta) —
+        # in acel caz tot are rost sa se deschida desfasurarea.
+        _, bara_cedata = planificare.bara_report_trimisa(order, r)
+        cedare_in_asteptare = bara_cedata is not None and not bara_cedata.get("consumApplied")
+        if not r["bare"] and not cedare_in_asteptare:
             QMessageBox.information(
                 self, "Nicio bara",
                 "Seteaza numarul de bare pe comanda si apasa \u201eDistribuie barele\u201d."
@@ -1614,7 +1740,11 @@ class FereastraDozareTitan(QWidget):
         if desf is None:
             return
 
-        if not any(not b.get("consumApplied") for b in r["bare"]):
+        _, bara_cedata_pt_mesaj = planificare.bara_report_trimisa(order, r)
+        cedare_in_asteptare = (
+            bara_cedata_pt_mesaj is not None and not bara_cedata_pt_mesaj.get("consumApplied")
+        )
+        if not any(not b.get("consumApplied") for b in r["bare"]) and not cedare_in_asteptare:
             QMessageBox.information(
                 self, "Nimic de aplicat",
                 "Toate barele acestei retete au deja consum aplicat."
@@ -1622,12 +1752,20 @@ class FereastraDozareTitan(QWidget):
             return
 
         are_report = any(v > 0 for v in desf["reportMostenit"].values())
-        mesaj = (
-            f"Se aplica pe stoc consumul retetei \u201e{r['nume']}\u201d "
-            f"({desf['bareIntregi']} bare dozate aici"
-            + (" + bara de report, cu dozarea ei veche" if are_report else "")
-            + ")."
-        )
+        if desf["bareIntregi"] == 0 and cedare_in_asteptare:
+            mesaj = (
+                f"Reteta \u201e{r['nume']}\u201d nu are nicio bara proprie \u2014 tot ce "
+                "avea in loturi a fost deja alocat barei de report cedate retetei "
+                "urmatoare. Se aplica acum restul din loturile de aici, creditat "
+                "acelei bare."
+            )
+        else:
+            mesaj = (
+                f"Se aplica pe stoc consumul retetei \u201e{r['nume']}\u201d "
+                f"({desf['bareIntregi']} bare dozate aici"
+                + (" + bara de report, cu dozarea ei veche" if are_report else "")
+                + ")."
+            )
         if QMessageBox.question(self, "Confirmare", mesaj) != QMessageBox.Yes:
             return
 

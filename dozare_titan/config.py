@@ -41,6 +41,8 @@ MATERIALE = [
     {"id": "aliajAlMo", "nume": "Aliaj AlMo"},
     {"id": "aliajSiTi", "nume": "Prealiaj SiTi"},
     {"id": "zrMetal", "nume": "Zr metal (Zr 702)"},
+    {"id": "zy4", "nume": "Zircaloy 4 (Zy4)"},
+    {"id": "snMetal", "nume": "Sn metal"},
 ]
 ORDINE_MAT = [m["id"] for m in MATERIALE]
 
@@ -111,6 +113,8 @@ FISA_LIMITA_ETICHETE = {
     "aliajAlMo": "Aliaj AlMo",
     "aliajSiTi": "Prealiaj SiTi",
     "zrMetal": "Zr 702",
+    "zy4": "Zircaloy 4 (Zy4)",
+    "snMetal": "Sn metalic",
 }
 
 # Ordinea de afisare a materialelor pe formularul "Fisa limita -cda" — usor
@@ -118,6 +122,7 @@ FISA_LIMITA_ETICHETE = {
 # ca in sablonul tiparit).
 ORDINE_AFISARE_MATERIALE = [
     "burete", "aliajAlV", "alMetal", "tio2", "feMetal", "aliajAlMo", "aliajSiTi", "zrMetal",
+    "zy4", "snMetal",
 ]
 ORDINE_FISA_LIMITA = ORDINE_AFISARE_MATERIALE  # alias istoric
 
@@ -133,6 +138,8 @@ MATERIAL_ABREVIERE_BILANT = {
     "aliajAlMo": "AlMo",
     "aliajSiTi": "SiTi",
     "zrMetal": "Zr",
+    "zy4": "Zy4",
+    "snMetal": "Sn",
 }
 
 # Numele materialelor asa cum apar in tabelele "Loturi si compozitie
@@ -147,6 +154,8 @@ MATERIAL_NUME_RETDOZARE = {
     "aliajAlMo": "Aliaj Al-Mo",
     "aliajSiTi": "Prealiaj Si-Ti",
     "zrMetal": "Zr metal",
+    "zy4": "Zy 4",
+    "snMetal": "Sn met.",
 }
 
 # Elementele chimice relevante pentru fiecare material, folosite ca sa
@@ -161,6 +170,8 @@ MATERIAL_ELEMENTE_RELEVANTE = {
     "aliajAlMo": ["Al", "Mo", "O", "Fe"],
     "aliajSiTi": ["Ti", "Si", "O", "Fe"],
     "zrMetal": ["Zr", "O", "Fe"],
+    "zy4": ["Zr", "Sn", "O", "Fe"],
+    "snMetal": ["Sn", "O"],
 }
 
 # Numele afisate implicit pe formulare, acolo unde formularul chiar
@@ -190,6 +201,30 @@ COD_FORMULAR_FISA_LIMITA = "PGQ 036.F10.00"
 #      niciodata calculat.
 # ---------------------------------------------------------------------------
 ALIAJ_IMPLICIT = "Ti5"
+
+# Materialele pe care le foloseste FIECARE tip de aliaj (aceleasi ca in
+# calcule/specificatii.py si calcule/ti6242.py). Un material care nu apare
+# in lista aliajului nu cere lot si nu se calculeaza, chiar daca tinta
+# elementului lui e > 0 (ex. la Ti 6-2-4-2 zirconiul vine din Zy4, deci
+# "Zr metal (Zr 702)" nu trebuie cerut). Aliajele care lipsesc de aici
+# pastreaza vechea regula (doar dupa tinta elementului).
+MATERIALE_PE_ALIAJ = {
+    "Ti5": ("burete", "aliajAlV", "alMetal", "tio2", "feMetal"),
+    "Ti -VT9": ("burete", "aliajAlMo", "alMetal", "zrMetal", "feMetal",
+                "aliajSiTi", "tio2"),
+    "Ti6Al4V-AMS": ("burete", "aliajAlV", "alMetal", "tio2"),
+    "Ti 6-2-4-2": ("burete", "aliajAlMo", "alMetal", "zrMetal", "zy4",
+                   "snMetal", "aliajSiTi", "tio2"),
+}
+
+# Grupuri de materiale ALTERNATIVE in cadrul unui aliaj: la Ti 6-2-4-2,
+# zirconiul poate veni fie din Zr metal (Zr 702, pur), fie din Zy4
+# (Zircaloy 4, care aduce si putin Sn) — depinde ce lot e pe stoc, NU
+# trebuie ambele deodata. Fiecare tuplu de mai jos e un grup: e nevoie de
+# lot selectat la CEL PUTIN UNUL dintre membrii lui, nu la fiecare.
+GRUPE_ALTERNATIVE_PE_ALIAJ = {
+    "Ti 6-2-4-2": (("zrMetal", "zy4"),),
+}
 ALIAJE_SPEC = {
     "Ti5": {
         "nume": "Ti5",
@@ -230,5 +265,47 @@ ALIAJE_SPEC = {
         "v_min": 0.035,
         "v_max": 0.045,
     },
+    # Ti 6-2-4-2 (Ti-6Al-2Sn-4Zr-2Mo-0.08Si). Cheia e IDENTICA cu numele din
+    # coloana "Aliaj" din standarde.xlsx, deci standardele (AMS 4975 /
+    # AMS 4976 ...) se leaga singure. Limitele sunt cele din Excel-ul de
+    # productie "Cda 24883-Ti6242" (STANDARD AMS 4976), ca FRACTII.
+    "Ti 6-2-4-2": {
+        "nume": "Ti 6-2-4-2",
+        "titlu_formular": "AMS 4976",
+        "grad": "Ti 6242",
+        "al_min": 0.055,
+        "al_max": 0.065,
+        "mo_min": 0.018,
+        "mo_max": 0.022,
+        "sn_min": 0.018,
+        "sn_max": 0.022,
+        "zr_min": 0.036,
+        "zr_max": 0.044,
+        "o_max": 0.0015,
+        "si_min": 0.0006,
+        "si_max": 0.001,
+        "fe_max": 0.001,
+    },
 }
 ALIAJE_DISPONIBILE = list(ALIAJE_SPEC.keys())
+
+
+# ---------------------------------------------------------------------------
+# Legatura cu standarde.xlsx (vezi standarde.py)
+# ---------------------------------------------------------------------------
+# Aliajele cu reteta implementata (cheile din ALIAJE_SPEC) se leaga de numele
+# aliajului din coloana "Aliaj" a fisierului standarde.xlsx, ca sa primeasca
+# lista de standarde. Ti5 si Ti6Al4V-AMS sunt ambele titan grad 5.
+# Ti -VT9 nu apare in Excel, deci nu are standarde (ramane cu limitele vechi
+# din ALIAJE_SPEC).
+#
+# Aliajele din Excel care NU sunt legate aici apar automat in aplicatie ca
+# PLACEHOLDER-e (se pot alege pe comanda, cu standardele si limitele lor,
+# dar fara calcul de dozare). Ca sa transformi un placeholder intr-un aliaj
+# real: adauga-l in ALIAJE_SPEC si in calcule.DOZATOARE sub cheia EXACT egala
+# cu numele din Excel (ex. "Titan grad 2"); legatura de mai jos nu mai e
+# necesara pentru el.
+ALIAJE_EXCEL = {
+    "Ti5": "Titan grad 5 (Ti 6Al 4V)",
+    "Ti6Al4V-AMS": "Titan grad 5 (Ti 6Al 4V)",
+}

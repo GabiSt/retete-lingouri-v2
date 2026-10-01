@@ -54,6 +54,16 @@ def _migreaza_comanda(order):
     """Completeaza tipul de aliaj pentru comenzile salvate inainte de
     introducerea acestui camp — toate au fost facute pentru Ti6Al4V."""
     order.setdefault("tipAliaj", ALIAJ_IMPLICIT)
+    # Standardul ales pe comanda (numele lui din standarde.xlsx). Comenzile
+    # salvate inainte de acest camp raman fara standard (""): se tiparesc cu
+    # limitele vechi din config.ALIAJE_SPEC, ca pana acum.
+    order.setdefault("standard", "")
+    # Standardele alese pe comanda (LISTA de nume — se pot alege mai multe,
+    # ex. AMS 4975 + AMS 4976). Comenzile salvate cu un singur standard
+    # ("standard") il primesc ca prim element al listei; "standard" ramane
+    # sincronizat cu primul nume, pentru codul si datele vechi.
+    if not isinstance(order.get("standarde"), list):
+        order["standarde"] = [order["standard"]] if order.get("standard") else []
     # Beneficiar si numarul de bucati lingou — folosite in antetul "Fisa
     # limita" (ex. "Beneficiar-Zirom", "3 buc lingou"); comenzile salvate
     # inainte de introducerea acestor campuri primesc valorile implicite.
